@@ -329,14 +329,7 @@ BO_ 920 GTW_carConfig: 8 PARTY
  SG_ GTW_carConfigByte7 : 56|8@1+ (1,0) [0|255] ""  PARTY
 
 BO_ 1016 UI_driverAssistControl: 8 PARTY
- SG_ UI_driverAssistControlByte0 : 0|8@1+ (1,0) [0|255] ""  PARTY
- SG_ UI_driverAssistControlByte1 : 8|8@1+ (1,0) [0|255] ""  PARTY
- SG_ UI_driverAssistControlByte2 : 16|8@1+ (1,0) [0|255] ""  PARTY
- SG_ UI_driverAssistControlByte3 : 24|8@1+ (1,0) [0|255] ""  PARTY
- SG_ UI_driverAssistControlByte4 : 32|8@1+ (1,0) [0|255] ""  PARTY
- SG_ UI_driverAssistControlByte5 : 40|8@1+ (1,0) [0|255] ""  PARTY
- SG_ UI_driverAssistControlByte6 : 48|8@1+ (1,0) [0|255] ""  PARTY
- SG_ UI_driverAssistControlByte7 : 56|8@1+ (1,0) [0|255] ""  PARTY
+ SG_ UI_followDistance : 45|3@1+ (1,0) [0|7] ""  PARTY
 
 CM_ BO_ 605 "Bytes change when toggling between FSD and AP, as well as Traffic Light and Stop Sign Control in TACC";
 

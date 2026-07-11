@@ -10,7 +10,7 @@ from opendbc.car.tesla.values import TeslaFlags
 from opendbc.sunnypilot.car.tesla.carstate_ext import CarStateExt
 from opendbc.sunnypilot.car.tesla.speed_profile import (
   DRIVER_ASSIST_CONTROL,
-  DRIVER_ASSIST_CONTROL_BYTES,
+  DRIVER_ASSIST_CONTROL_SELECTOR,
   GTW_CAR_CONFIG,
   GTW_CAR_CONFIG_BYTES,
   SELECTOR_CONFIRMATION_SAMPLES,
@@ -18,7 +18,6 @@ from opendbc.sunnypilot.car.tesla.speed_profile import (
   SpeedProfileProtocol,
   TeslaSpeedProfileInputState,
   detect_das_hardware,
-  raw_can_values,
   select_protocol,
 )
 
@@ -40,7 +39,6 @@ def _assert_gap_release(events: list[structs.CarState.ButtonEvent]) -> None:
 ])
 def test_valid_raw_selectors_are_exhaustive(protocol, selectors):
   assert VALID_SELECTORS[protocol] == selectors
-  assert set(range(8)) - VALID_SELECTORS[protocol] == set(range(8)) - selectors
 
 
 @pytest.mark.parametrize("dat,expected", [
@@ -69,14 +67,19 @@ def test_protocol_requires_confirmed_hardware_and_firmware(das_hw, fsd_14, expec
   assert select_protocol(das_hw, fsd_14) == expected
 
 
-@pytest.mark.parametrize("message,signals,address", [
-  (GTW_CAR_CONFIG, GTW_CAR_CONFIG_BYTES, 0x398),
-  (DRIVER_ASSIST_CONTROL, DRIVER_ASSIST_CONTROL_BYTES, 0x3F8),
-])
-def test_raw_input_dbc_round_trip(message, signals, address):
+def test_gateway_config_dbc_round_trip():
   dat = bytes.fromhex("12 34 56 78 9a bc de f0")
   packer = CANPacker("tesla_model3_party")
-  assert packer.make_can_msg(message, 0, raw_can_values(dat, signals)) == (address, dat, 0)
+  values = dict(zip(GTW_CAR_CONFIG_BYTES, dat, strict=True))
+  assert packer.make_can_msg(GTW_CAR_CONFIG, 0, values) == (0x398, dat, 0)
+
+
+@pytest.mark.parametrize("selector", range(8))
+def test_follow_distance_dbc_round_trip(selector):
+  dat = b"\x00" * 5 + bytes([selector << 5]) + b"\x00" * 2
+  packer = CANPacker("tesla_model3_party")
+  values = {DRIVER_ASSIST_CONTROL_SELECTOR: selector}
+  assert packer.make_can_msg(DRIVER_ASSIST_CONTROL, 0, values) == (0x3F8, dat, 0)
 
 
 def test_no_autopilot_control_input_or_dbc_message():
@@ -87,12 +90,6 @@ def test_no_autopilot_control_input_or_dbc_message():
   dbc = CANPacker("tesla_model3_party").dbc
   assert 0x3FD not in dbc.msgs
   assert "UI_autopilotControl" not in dbc.name_to_msg
-
-
-@pytest.mark.parametrize("size", [0, 1, 7, 9])
-def test_raw_can_values_rejects_wrong_payload_size(size):
-  with pytest.raises(ValueError):
-    raw_can_values(bytes(size), GTW_CAR_CONFIG_BYTES)
 
 
 def _make_state(*, fsd_14: bool, openpilot_longitudinal: bool = True) -> TeslaSpeedProfileInputState:

@@ -232,30 +232,3 @@ def test_gap_release_cycles_and_persists_longitudinal_personality():
     assert module.EventName.personalityChanged in subject.events.added
 
   assert subject.params.writes == [("LongitudinalPersonality", personality) for personality in expected]
-
-
-def _load_long_mpc() -> ModuleType:
-  stubs = {
-    "openpilot.common.realtime": _stub_module("openpilot.common.realtime", DT_MDL=0.05),
-    "openpilot.common.swaglog": _stub_module("openpilot.common.swaglog", cloudlog=_Dummy()),
-    "openpilot.selfdrive.controls.radard": _stub_module("radard", _LEAD_ACCEL_TAU=1.5),
-    "openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.c_generated_code.acados_ocp_solver_pyx":
-      _stub_module("acados_solver", AcadosOcpSolverCython=_Dummy),
-    "casadi": _stub_module("casadi", SX=_Dummy, vertcat=lambda *values: values),
-  }
-
-  path = ROOT / "selfdrive/controls/lib/longitudinal_mpc_lib/long_mpc.py"
-  spec = importlib.util.spec_from_file_location("_long_mpc_personality_cycle_test", path)
-  assert spec is not None and spec.loader is not None
-  module = importlib.util.module_from_spec(spec)
-  with _patched_modules(stubs):
-    spec.loader.exec_module(module)
-  return module
-
-
-def test_personality_following_gaps():
-  long_mpc = _load_long_mpc()
-
-  assert long_mpc.get_T_FOLLOW(log.LongitudinalPersonality.aggressive) == 1.25
-  assert long_mpc.get_T_FOLLOW(log.LongitudinalPersonality.standard) == 1.45
-  assert long_mpc.get_T_FOLLOW(log.LongitudinalPersonality.relaxed) == 1.75

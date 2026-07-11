@@ -15,7 +15,7 @@ GTW_CAR_CONFIG = "GTW_carConfig"
 DRIVER_ASSIST_CONTROL = "UI_driverAssistControl"
 
 GTW_CAR_CONFIG_BYTES = tuple(f"GTW_carConfigByte{i}" for i in range(8))
-DRIVER_ASSIST_CONTROL_BYTES = tuple(f"UI_driverAssistControlByte{i}" for i in range(8))
+DRIVER_ASSIST_CONTROL_SELECTOR = "UI_followDistance"
 
 SELECTOR_CONFIRMATION_SAMPLES = 2
 
@@ -32,15 +32,9 @@ VALID_SELECTORS = {
 }
 
 
-def raw_can_values(dat: bytes, signal_names: tuple[str, ...]) -> dict[str, int]:
-  if len(dat) != len(signal_names):
-    raise ValueError(f"expected {len(signal_names)} bytes, got {len(dat)}")
-  return dict(zip(signal_names, dat, strict=True))
-
-
-def _raw_can_frames(vl_all: dict[str, list[float]], signal_names: tuple[str, ...]) -> list[bytes]:
-  values = [vl_all.get(name, []) for name in signal_names]
-  if not values or not any(values):
+def _car_config_frames(vl_all: dict[str, list[float]]) -> list[bytes]:
+  values = [vl_all.get(name, []) for name in GTW_CAR_CONFIG_BYTES]
+  if not any(values):
     return []
   if len({len(v) for v in values}) != 1:
     return []
@@ -124,7 +118,7 @@ class TeslaSpeedProfileInputState:
 
   def update(self, cp_party) -> list[structs.CarState.ButtonEvent]:
     if self.enabled:
-      hardware_frames = _raw_can_frames(cp_party.vl_all[GTW_CAR_CONFIG], GTW_CAR_CONFIG_BYTES)
+      hardware_frames = _car_config_frames(cp_party.vl_all[GTW_CAR_CONFIG])
       protocol_changed = False
       for dat in hardware_frames:
         protocol_changed |= self._update_protocol(detect_das_hardware(dat))
@@ -133,9 +127,9 @@ class TeslaSpeedProfileInputState:
       # A protocol observation and selector observation in the same drain therefore
       # cannot prove that the selector used the newly recognized layout.
       if not protocol_changed and self.protocol != SpeedProfileProtocol.unknown:
-        follow_frames = _raw_can_frames(cp_party.vl_all[DRIVER_ASSIST_CONTROL], DRIVER_ASSIST_CONTROL_BYTES)
-        for dat in follow_frames:
-          self._observe_selector((dat[5] >> 5) & 0x07)
+        selectors = cp_party.vl_all[DRIVER_ASSIST_CONTROL].get(DRIVER_ASSIST_CONTROL_SELECTOR, [])
+        for selector in selectors:
+          self._observe_selector(int(selector))
 
     # CarState consumers treat gapAdjustCruise as an edge. Drain at most one
     # queued edge per update so multiple confirmed changes in one CAN batch are
