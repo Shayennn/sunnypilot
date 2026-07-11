@@ -7,7 +7,6 @@ from opendbc.car.tesla.teslacan import TeslaCAN
 from opendbc.car.tesla.values import CarControllerParams
 from opendbc.car.vehicle_model import VehicleModel
 from opendbc.sunnypilot.car.tesla.coop_steering import CoopSteeringCarController
-from opendbc.sunnypilot.car.tesla.speed_profile import TeslaSpeedProfileCarController
 
 
 def get_safety_CP():
@@ -17,11 +16,10 @@ def get_safety_CP():
   return CarInterface.get_non_essential_params("TESLA_MODEL_Y")
 
 
-class CarController(CarControllerBase, CoopSteeringCarController, TeslaSpeedProfileCarController):
+class CarController(CarControllerBase, CoopSteeringCarController):
   def __init__(self, dbc_names, CP, CP_SP):
     CarControllerBase.__init__(self, dbc_names, CP, CP_SP)
     CoopSteeringCarController.__init__(self)
-    TeslaSpeedProfileCarController.__init__(self, CP_SP)
     self.apply_angle_last = 0
     self.packer = CANPacker(dbc_names[Bus.party])
     self.tesla_can = TeslaCAN(CP, self.packer)
@@ -32,7 +30,7 @@ class CarController(CarControllerBase, CoopSteeringCarController, TeslaSpeedProf
   def update(self, CC, CC_SP, CS, now_nanos):
     CoopSteeringCarController.update(self, self.CP_SP)
     actuators = CC.actuators
-    can_sends = self.update_speed_profile(CC, CS)
+    can_sends = []
 
     # Tesla EPS enforces disabling steering on heavy lateral override force.
     # When enabling in a tight curve, we wait until user reduces steering force to start steering.

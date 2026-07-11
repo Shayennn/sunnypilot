@@ -123,7 +123,6 @@ def initialize_params(params) -> list[dict[str, Any]]:
   # tesla
   keys.extend([
     "TeslaCoopSteering",
-    "TeslaSpeedProfile",
   ])
 
   # toyota

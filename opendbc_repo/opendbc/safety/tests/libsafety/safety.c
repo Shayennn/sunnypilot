@@ -25,10 +25,7 @@ bool safety_config_valid() {
 
   for (int i = 0; i < current_safety_config.rx_checks_len; i++) {
     const RxCheck addr = current_safety_config.rx_checks[i];
-    const bool ignore_alive = addr.msg[addr.status.index].ignore_alive;
-    bool valid = ignore_alive && !addr.status.msg_seen;
-    valid = valid || (addr.status.msg_seen && (ignore_alive || !addr.status.lagging) && addr.status.valid_checksum &&
-                      (addr.status.wrong_counters < MAX_WRONG_COUNTERS) && addr.status.valid_quality_flag);
+    bool valid = addr.status.msg_seen && !addr.status.lagging && addr.status.valid_checksum && (addr.status.wrong_counters < MAX_WRONG_COUNTERS) && addr.status.valid_quality_flag;
     if (!valid) {
       // printf("i %d seen %d lagging %d valid checksum %d wrong counters %d valid quality flag %d\n", i, addr.status.msg_seen, addr.status.lagging, addr.status.valid_checksum, addr.status.wrong_counters, addr.status.valid_quality_flag);
       return false;

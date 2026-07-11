@@ -7,20 +7,17 @@ See the LICENSE.md file in the root directory for more details.
 from enum import IntEnum
 import math
 
-from opendbc.car import DT_CTRL, CanData, structs
-from opendbc.car.tesla.values import CANBUS, TeslaFlags
-from opendbc.sunnypilot.car.tesla.values import TeslaFlagsSP
+from opendbc.car import structs
+from opendbc.car.tesla.values import TeslaFlags
 
 
 GTW_CAR_CONFIG = "GTW_carConfig"
 DRIVER_ASSIST_CONTROL = "UI_driverAssistControl"
-AUTOPILOT_CONTROL = "UI_autopilotControl"
 
 GTW_CAR_CONFIG_BYTES = tuple(f"GTW_carConfigByte{i}" for i in range(8))
 DRIVER_ASSIST_CONTROL_BYTES = tuple(f"UI_driverAssistControlByte{i}" for i in range(8))
-AUTOPILOT_CONTROL_BYTES = tuple(f"UI_autopilotControlByte{i}" for i in range(8))
 
-AP_FIRST_STABLE_FRAMES = round(1.0 / DT_CTRL)
+PERSONALITY_CONFIRMATION_SAMPLES = 2
 
 
 class SpeedProfileProtocol(IntEnum):
@@ -29,9 +26,41 @@ class SpeedProfileProtocol(IntEnum):
   hw4_fsd14 = 2
 
 
+class TeslaSpeedProfile(IntEnum):
+  chill = 0
+  normal = 1
+  hurry = 2
+  mad_max = 3
+  sloth = 4
+
+
+class SunnypilotPersonality(IntEnum):
+  aggressive = 0
+  standard = 1
+  relaxed = 2
+
+
 FOLLOW_DISTANCE_PROFILES = {
-  SpeedProfileProtocol.hw3: {1: 2, 2: 1, 3: 0},
-  SpeedProfileProtocol.hw4_fsd14: {1: 3, 2: 2, 3: 1, 4: 0, 5: 4},
+  SpeedProfileProtocol.hw3: {
+    1: TeslaSpeedProfile.hurry,
+    2: TeslaSpeedProfile.normal,
+    3: TeslaSpeedProfile.chill,
+  },
+  SpeedProfileProtocol.hw4_fsd14: {
+    1: TeslaSpeedProfile.mad_max,
+    2: TeslaSpeedProfile.hurry,
+    3: TeslaSpeedProfile.normal,
+    4: TeslaSpeedProfile.chill,
+    5: TeslaSpeedProfile.sloth,
+  },
+}
+
+PROFILE_PERSONALITIES = {
+  TeslaSpeedProfile.sloth: SunnypilotPersonality.relaxed,
+  TeslaSpeedProfile.chill: SunnypilotPersonality.relaxed,
+  TeslaSpeedProfile.normal: SunnypilotPersonality.standard,
+  TeslaSpeedProfile.hurry: SunnypilotPersonality.aggressive,
+  TeslaSpeedProfile.mad_max: SunnypilotPersonality.aggressive,
 }
 
 
@@ -50,135 +79,114 @@ def _raw_can_frames(vl_all: dict[str, list[float]], signal_names: tuple[str, ...
   return [bytes(int(v) for v in frame) for frame in zip(*values, strict=True)]
 
 
-def detect_das_hardware(dat: bytes) -> int:
+def detect_das_hardware(dat: bytes) -> int | None:
   """Return Tesla's raw dasHw value, treating empty gateway stubs as unknown."""
   if len(dat) != 8 or not any(dat):
-    return 0
-  das_hw = (dat[0] >> 6) & 0x03
-  return das_hw if das_hw in (2, 3) else 0
+    return None
+  return (dat[0] >> 6) & 0x03
 
 
-def select_protocol(das_hw: int, fsd_14: bool) -> SpeedProfileProtocol:
+def select_protocol(das_hw: int | None, fsd_14: bool) -> SpeedProfileProtocol:
   """Select only profile layouts constrained by both hardware and firmware."""
   if das_hw == 2 and not fsd_14:
     return SpeedProfileProtocol.hw3
-  if das_hw == 3 and fsd_14:
+  # FSD_14 is derived from an exact HW4 EPS firmware match, so it is a safe
+  # fallback when some Juniper/Giga gateways forward an all-zero 0x398 stub.
+  # A populated, conflicting hardware value still fails closed.
+  if fsd_14 and das_hw in (None, 3):
     return SpeedProfileProtocol.hw4_fsd14
   return SpeedProfileProtocol.unknown
 
 
-def profile_for_follow_distance(protocol: SpeedProfileProtocol, follow_distance: int) -> int | None:
+def profile_for_follow_distance(protocol: SpeedProfileProtocol, follow_distance: int) -> TeslaSpeedProfile | None:
   return FOLLOW_DISTANCE_PROFILES.get(protocol, {}).get(follow_distance)
 
 
-def apply_speed_profile(dat: bytes, protocol: SpeedProfileProtocol, profile: int | None) -> bytes | None:
-  """Clone a live 0x3FD payload and change only its protocol-specific profile field."""
-  if len(dat) != 8 or profile is None:
-    return None
-
-  mux = dat[0] & 0x07
-  modified = bytearray(dat)
-  if protocol == SpeedProfileProtocol.hw3:
-    # HW3 only applies the profile when FSD is selected in the mux-0 frame.
-    if mux != 0 or not (dat[4] & 0x40) or not 0 <= profile <= 2:
-      return None
-    modified[6] = (modified[6] & ~0x06) | (profile << 1)
-  elif protocol == SpeedProfileProtocol.hw4_fsd14:
-    if mux != 2 or not 0 <= profile <= 4:
-      return None
-    modified[7] = (modified[7] & ~0xE0) | (profile << 5)
-  else:
-    return None
-
-  return bytes(modified) if modified != dat else None
+def personality_for_profile(profile: TeslaSpeedProfile | None) -> SunnypilotPersonality | None:
+  return PROFILE_PERSONALITIES.get(profile)
 
 
-class TeslaSpeedProfileState:
-  def __init__(self, CP: structs.CarParams, CP_SP: structs.CarParamsSP):
-    self.enabled = bool(CP_SP.flags & TeslaFlagsSP.SPEED_PROFILE)
+def personality_for_follow_distance(protocol: SpeedProfileProtocol, follow_distance: int) -> SunnypilotPersonality | None:
+  return personality_for_profile(profile_for_follow_distance(protocol, follow_distance))
+
+
+class TeslaSpeedProfileInputState:
+  def __init__(self, CP: structs.CarParams):
+    self.enabled = bool(CP.openpilotLongitudinalControl)
     self.fsd_14 = bool(CP.flags & TeslaFlags.FSD_14)
-    self.das_hw = 0
-    self.protocol = SpeedProfileProtocol.unknown
+    self.das_hw: int | None = None
+    self.protocol = select_protocol(self.das_hw, self.fsd_14)
+
     self.follow_distance: int | None = None
-    self.profile: int | None = None
-    self.autopilot_control_frames: list[bytes] = []
+    self.profile: TeslaSpeedProfile | None = None
+    self.personality_request = SunnypilotPersonality.standard
+    self.personality_request_valid = False
+
+    self._candidate_follow_distance: int | None = None
+    self._candidate_samples = 0
 
   @staticmethod
   def parser_messages(enabled: bool) -> list[tuple[str, float]]:
     if not enabled:
       return []
-    # These inputs gate an optional feature and must not invalidate base car state.
-    return [(GTW_CAR_CONFIG, math.nan), (DRIVER_ASSIST_CONTROL, math.nan), (AUTOPILOT_CONTROL, math.nan)]
+    # These optional inputs must not invalidate base Tesla car state when absent.
+    return [(GTW_CAR_CONFIG, math.nan), (DRIVER_ASSIST_CONTROL, math.nan)]
 
-  def _update_protocol(self, das_hw: int) -> bool:
+  def _reset_source(self) -> None:
+    self.follow_distance = None
+    self.profile = None
+    # Standard is an inert payload while valid is false; consumers must retain
+    # their current personality until a confirmed Tesla selection is published.
+    self.personality_request = SunnypilotPersonality.standard
+    self.personality_request_valid = False
+    self._candidate_follow_distance = None
+    self._candidate_samples = 0
+
+  def _update_protocol(self, das_hw: int | None) -> bool:
     protocol = select_protocol(das_hw, self.fsd_14)
     changed = das_hw != self.das_hw or protocol != self.protocol
     self.das_hw = das_hw
     self.protocol = protocol
     if changed:
-      # Require a new source selection after hardware/layout changes. Panda applies
-      # the same rule, and it avoids inventing ordering across CAN IDs in vl_all.
-      self.follow_distance = None
-      self.profile = None
+      self._reset_source()
     return changed
 
-  def update(self, cp_party) -> None:
-    self.autopilot_control_frames = []
-    if not self.enabled:
+  def _observe_follow_distance(self, follow_distance: int) -> None:
+    profile = profile_for_follow_distance(self.protocol, follow_distance)
+    personality = personality_for_profile(profile)
+    if profile is None or personality is None:
+      # Invalid source values never publish a request and break an in-progress
+      # confirmation. A previously confirmed request remains unchanged.
+      self._candidate_follow_distance = None
+      self._candidate_samples = 0
       return
 
-    hardware_frames = _raw_can_frames(cp_party.vl_all[GTW_CAR_CONFIG], GTW_CAR_CONFIG_BYTES)
-    protocol_changed = False
-    for dat in hardware_frames:
-      protocol_changed |= self._update_protocol(detect_das_hardware(dat))
-
-    follow_frames = _raw_can_frames(cp_party.vl_all[DRIVER_ASSIST_CONTROL], DRIVER_ASSIST_CONTROL_BYTES)
-    profile_changed = False
-    if not protocol_changed:
-      for dat in follow_frames:
-        follow_distance = (dat[5] >> 5) & 0x07
-        profile = profile_for_follow_distance(self.protocol, follow_distance)
-        if profile is not None:
-          profile_changed |= profile != self.profile
-          self.follow_distance = follow_distance
-          self.profile = profile
-
-    # Keep only the newest live frame for each mux in this parser drain. Never replay
-    # a value retained in CANParser.vl from a previous control cycle.
-    # Cross-ID ordering is not represented in vl_all, so a new protocol/profile must
-    # be followed by a 0x3FD from a later drain before it can authorize a shadow.
-    if protocol_changed or profile_changed:
-      return
-
-    frames_by_mux: dict[int, bytes] = {}
-    for dat in _raw_can_frames(cp_party.vl_all[AUTOPILOT_CONTROL], AUTOPILOT_CONTROL_BYTES):
-      frames_by_mux[dat[0] & 0x07] = dat
-    self.autopilot_control_frames = list(frames_by_mux.values())
-
-
-class TeslaSpeedProfileCarController:
-  def __init__(self, CP_SP: structs.CarParamsSP):
-    self.speed_profile_enabled = bool(CP_SP.flags & TeslaFlagsSP.SPEED_PROFILE)
-    self.speed_profile_engaged_frames = 0
-
-  def update_speed_profile(self, CC: structs.CarControl, CS) -> list[CanData]:
-    if not self.speed_profile_enabled:
-      return []
-
-    if CC.enabled:
-      self.speed_profile_engaged_frames += 1
+    if follow_distance == self._candidate_follow_distance:
+      self._candidate_samples = min(self._candidate_samples + 1, PERSONALITY_CONFIRMATION_SAMPLES)
     else:
-      self.speed_profile_engaged_frames = 0
-      return []
+      self._candidate_follow_distance = follow_distance
+      self._candidate_samples = 1
 
-    # Match Flipper's AP-First gate: do not shadow 0x3FD on the engagement edge.
-    if self.speed_profile_engaged_frames <= AP_FIRST_STABLE_FRAMES:
-      return []
+    if self._candidate_samples >= PERSONALITY_CONFIRMATION_SAMPLES:
+      self.follow_distance = follow_distance
+      self.profile = profile
+      self.personality_request = personality
+      self.personality_request_valid = True
 
-    can_sends = []
-    state = CS.speed_profile
-    for dat in state.autopilot_control_frames:
-      modified = apply_speed_profile(dat, state.protocol, state.profile)
-      if modified is not None:
-        can_sends.append(CanData(0x3FD, modified, CANBUS.autopilot_party))
-    return can_sends
+  def update(self, cp_party, ret_sp: structs.CarStateSP) -> None:
+    if self.enabled:
+      hardware_frames = _raw_can_frames(cp_party.vl_all[GTW_CAR_CONFIG], GTW_CAR_CONFIG_BYTES)
+      protocol_changed = False
+      for dat in hardware_frames:
+        protocol_changed |= self._update_protocol(detect_das_hardware(dat))
+
+      # CANParser.vl_all does not preserve ordering between different message IDs.
+      # A protocol observation and selector observation in the same drain therefore
+      # cannot prove that the selector used the newly recognized layout.
+      if not protocol_changed and self.protocol != SpeedProfileProtocol.unknown:
+        follow_frames = _raw_can_frames(cp_party.vl_all[DRIVER_ASSIST_CONTROL], DRIVER_ASSIST_CONTROL_BYTES)
+        for dat in follow_frames:
+          self._observe_follow_distance((dat[5] >> 5) & 0x07)
+
+    ret_sp.longitudinalPersonalityRequest = int(self.personality_request)
+    ret_sp.longitudinalPersonalityRequestValid = self.personality_request_valid

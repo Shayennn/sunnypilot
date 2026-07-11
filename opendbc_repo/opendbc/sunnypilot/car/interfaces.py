@@ -18,7 +18,7 @@ from opendbc.sunnypilot.car.hyundai.enable_radar_tracks import enable_radar_trac
 from opendbc.sunnypilot.car.hyundai.longitudinal.helpers import LongitudinalTuningType
 from opendbc.sunnypilot.car.hyundai.values import HyundaiFlagsSP
 from opendbc.sunnypilot.car.subaru.values_ext import SubaruFlagsSP, SubaruSafetyFlagsSP
-from opendbc.sunnypilot.car.tesla.values import TeslaFlagsSP, TeslaSafetyFlagsSP
+from opendbc.sunnypilot.car.tesla.values import TeslaFlagsSP
 from opendbc.sunnypilot.car.toyota.values import ToyotaFlagsSP
 
 
@@ -84,7 +84,7 @@ def setup_interfaces(CI, CP: structs.CarParams, CP_SP: structs.CarParamsSP,
   params_dict = {k: v for param in params_list for k, v in param.items()}
 
   _initialize_custom_longitudinal_tuning(CI, CP, CP_SP, params_dict)
-  _initialize_tesla(CP, CP_SP, params_dict)
+  _initialize_coop_steering(CP, CP_SP, params_dict)
   _initialize_radar_tracks(CP, CP_SP, can_recv, can_send)
   _initialize_stop_and_go(CP, CP_SP, params_dict)
   _initialize_toyota(CP, CP_SP, params_dict)
@@ -104,19 +104,12 @@ def _initialize_custom_longitudinal_tuning(CI, CP: structs.CarParams, CP_SP: str
   _ = CI.get_longitudinal_tuning_sp(CP, CP_SP)
 
 
-def _initialize_tesla(CP: structs.CarParams, CP_SP: structs.CarParamsSP,
-                      params_dict: dict[str, str]) -> None:
+def _initialize_coop_steering(CP: structs.CarParams, CP_SP: structs.CarParamsSP,
+                              params_dict: dict[str, str]) -> None:
   if CP.brand == 'tesla':
     coop_steering = int(params_dict.get("TeslaCoopSteering", 0)) == 1
     if coop_steering:
       CP_SP.flags |= TeslaFlagsSP.COOP_STEERING.value
-
-    # Tesla's profile is a stock DAS setting and has no effect when openpilot
-    # replaces longitudinal control. Keep the CAN path closed in that mode.
-    speed_profile = int(params_dict.get("TeslaSpeedProfile", 0)) == 1
-    if speed_profile and not CP.openpilotLongitudinalControl:
-      CP_SP.flags |= TeslaFlagsSP.SPEED_PROFILE.value
-      CP_SP.safetyParam |= TeslaSafetyFlagsSP.SPEED_PROFILE
 
 
 def _initialize_radar_tracks(CP: structs.CarParams, CP_SP: structs.CarParamsSP,

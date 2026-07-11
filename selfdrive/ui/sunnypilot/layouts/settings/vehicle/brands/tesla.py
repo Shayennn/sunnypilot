@@ -18,8 +18,7 @@ class TeslaSettings(BrandSettings):
   def __init__(self):
     super().__init__()
     self.coop_steering_toggle = toggle_item_sp(tr("Cooperative Steering (Beta)"), "", param="TeslaCoopSteering")
-    self.speed_profile_toggle = toggle_item_sp(tr("Tesla Speed Profile (Experimental)"), "", param="TeslaSpeedProfile")
-    self.items = [self.coop_steering_toggle, self.speed_profile_toggle]
+    self.items = [self.coop_steering_toggle]
 
   def update_settings(self):
     is_metric = ui_state.is_metric
@@ -42,16 +41,3 @@ class TeslaSettings(BrandSettings):
 
     self.coop_steering_toggle.set_description(coop_steering_desc)
     self.coop_steering_toggle.action_item.set_enabled(ui_state.is_offroad())
-
-    speed_profile_warning = tr("Experimental: Tesla firmware may reject modified Autopilot settings messages. Disable this if Autopilot engagement changes.")
-    speed_profile_desc = (
-      f"<b>{speed_profile_warning}</b><br><br>" +
-      tr("With factory longitudinal control, mirrors the Tesla follow-distance selector into Tesla's stock speed-profile field. " +
-         "Only recognized HW3 and FSD 14 message layouts are supported. HW3 follow-distance mapping is community-derived and may vary by firmware; " +
-         "validate it against a vehicle CAN capture before use. Changes take effect on the next drive.")
-    )
-    if not ui_state.is_offroad():
-      speed_profile_desc = f"<b>{coop_steering_disabled_msg}</b><br><br>{speed_profile_desc}"
-
-    self.speed_profile_toggle.set_description(speed_profile_desc)
-    self.speed_profile_toggle.action_item.set_enabled(ui_state.is_offroad())

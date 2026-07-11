@@ -170,3 +170,5 @@ class CarControlSP:
 @auto_dataclass
 class CarStateSP:
   speedLimit: float = auto_field()
+  longitudinalPersonalityRequest: int = auto_field()
+  longitudinalPersonalityRequestValid: bool = auto_field()

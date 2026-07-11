@@ -176,7 +176,6 @@ typedef struct {
   const uint8_t max_counter;         // maximum value of the counter. 0 means that the counter check is skipped
   const bool ignore_quality_flag;    // true if quality flag check is skipped
   const bool ignore_frequency_check; // true if minimum frequency enforcement is skipped
-  const bool ignore_alive;           // true if absence/staleness is allowed; seen invalid messages still fail
 } CanMsgCheck;
 
 typedef struct {

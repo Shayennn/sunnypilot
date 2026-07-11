@@ -338,16 +338,6 @@ BO_ 1016 UI_driverAssistControl: 8 PARTY
  SG_ UI_driverAssistControlByte6 : 48|8@1+ (1,0) [0|255] ""  PARTY
  SG_ UI_driverAssistControlByte7 : 56|8@1+ (1,0) [0|255] ""  PARTY
 
-BO_ 1021 UI_autopilotControl: 8 PARTY
- SG_ UI_autopilotControlByte0 : 0|8@1+ (1,0) [0|255] ""  PARTY
- SG_ UI_autopilotControlByte1 : 8|8@1+ (1,0) [0|255] ""  PARTY
- SG_ UI_autopilotControlByte2 : 16|8@1+ (1,0) [0|255] ""  PARTY
- SG_ UI_autopilotControlByte3 : 24|8@1+ (1,0) [0|255] ""  PARTY
- SG_ UI_autopilotControlByte4 : 32|8@1+ (1,0) [0|255] ""  PARTY
- SG_ UI_autopilotControlByte5 : 40|8@1+ (1,0) [0|255] ""  PARTY
- SG_ UI_autopilotControlByte6 : 48|8@1+ (1,0) [0|255] ""  PARTY
- SG_ UI_autopilotControlByte7 : 56|8@1+ (1,0) [0|255] ""  PARTY
-
 CM_ BO_ 605 "Bytes change when toggling between FSD and AP, as well as Traffic Light and Stop Sign Control in TACC";
 
 CM_ SG_ 659 DAS_autosteerEnabled "1 if Autosteer or FSD is enabled, 0 otherwise";

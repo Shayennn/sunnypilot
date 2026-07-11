@@ -323,12 +323,8 @@ void safety_tick(const safety_config *cfg) {
       // Quite conservative to not risk false triggers.
       // 2s of lag is worse case, since the function is called at 1Hz
       uint32_t frequency = cfg->rx_checks[i].msg[cfg->rx_checks[i].status.index].frequency;
-      bool ignore_alive = cfg->rx_checks[i].msg[cfg->rx_checks[i].status.index].ignore_alive;
-      bool lagging = false;
-      if (!ignore_alive && (frequency > 0U)) {
-        uint32_t timestep = 1e6 / frequency;
-        lagging = elapsed_time > SAFETY_MAX(timestep * MAX_MISSED_MSGS, 1e6);
-      }
+      uint32_t timestep = 1e6 / frequency;
+      bool lagging = elapsed_time > SAFETY_MAX(timestep * MAX_MISSED_MSGS, 1e6);
       cfg->rx_checks[i].status.lagging = lagging;
       if (lagging) {
         controls_allowed = false;
@@ -336,12 +332,8 @@ void safety_tick(const safety_config *cfg) {
       }
 
       // enforce minimum frequency for safety-relevant messages
-      bool frequency_invalid = !ignore_alive && ((frequency == 0U) ||
-                               (!cfg->rx_checks[i].msg[cfg->rx_checks[i].status.index].ignore_frequency_check && (frequency < 10U)));
-      // Optional inputs do not participate in liveness, but once seen they must still pass all configured validity checks.
-      bool check_msg_validity = !ignore_alive || cfg->rx_checks[i].status.msg_seen;
-      bool msg_invalid = check_msg_validity && !is_msg_valid(cfg->rx_checks, i);
-      if (lagging || frequency_invalid || msg_invalid) {
+      bool frequency_invalid = !cfg->rx_checks[i].msg[cfg->rx_checks[i].status.index].ignore_frequency_check && (frequency < 10U);
+      if (lagging || frequency_invalid || !is_msg_valid(cfg->rx_checks, i)) {
         rx_checks_invalid = true;
         controls_allowed = false;
       }
