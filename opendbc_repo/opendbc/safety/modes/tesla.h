@@ -16,9 +16,29 @@
 #define TESLA_VEHICLE_BUS_ADDR_CHECK \
   {.msg = {{0x3DF, 1, 8, 2U, .ignore_checksum = true, .ignore_counter = true, .ignore_quality_flag = true, .ignore_frequency_check = true}, { 0 }, { 0 }}},    /* UI_status2 */ \
 
+#define TESLA_SPEED_PROFILE_RX_CHECKS \
+  {.msg = {{0x398, 0, 8, 1U, .ignore_checksum = true, .ignore_counter = true, .ignore_quality_flag = true, .ignore_frequency_check = true, .ignore_alive = true}, { 0 }, { 0 }}},    /* GTW_carConfig */          \
+  {.msg = {{0x3F8, 0, 8, 1U, .ignore_checksum = true, .ignore_counter = true, .ignore_quality_flag = true, .ignore_frequency_check = true, .ignore_alive = true}, { 0 }, { 0 }}},    /* UI_driverAssistControl */ \
+  {.msg = {{0x3FD, 0, 8, 1U, .ignore_checksum = true, .ignore_counter = true, .ignore_quality_flag = true, .ignore_frequency_check = true, .ignore_alive = true}, { 0 }, { 0 }}},    /* UI_autopilotControl */    \
+
+#define TESLA_SPEED_PROFILE_HW_UNKNOWN 0U
+#define TESLA_SPEED_PROFILE_HW3 2U
+#define TESLA_SPEED_PROFILE_HW4 3U
+#define TESLA_SPEED_PROFILE_ENGAGED_MIN_US 1000000U
+#define TESLA_SPEED_PROFILE_BASELINE_MAX_AGE_US 100000U
+
 static bool tesla_longitudinal = false;
 static bool tesla_fsd_14 = false;
 static bool tesla_stock_aeb = false;
+static bool tesla_speed_profile = false;
+static uint8_t tesla_speed_profile_hw = TESLA_SPEED_PROFILE_HW_UNKNOWN;
+static uint8_t tesla_speed_profile_value = 0U;
+static bool tesla_speed_profile_value_valid = false;
+static uint8_t tesla_speed_profile_baseline[8][8];
+static bool tesla_speed_profile_baseline_valid[8];
+static uint32_t tesla_speed_profile_baseline_ts[8];
+static bool tesla_speed_profile_engaged = false;
+static uint32_t tesla_speed_profile_engaged_ts = 0U;
 
 // Only rising edges while controls are not allowed are considered for these systems:
 // TODO: Only LKAS (non-emergency) is currently supported since we've only seen it
@@ -124,6 +144,130 @@ static int tesla_get_steer_ctrl_type(const int ctrl_type) {
   return steer_ctrl_type;
 }
 
+static void tesla_speed_profile_reset_baselines(void) {
+  for (int mux = 0; mux < 8; mux++) {
+    tesla_speed_profile_baseline_valid[mux] = false;
+    tesla_speed_profile_baseline_ts[mux] = 0U;
+    for (int i = 0; i < 8; i++) {
+      tesla_speed_profile_baseline[mux][i] = 0U;
+    }
+  }
+}
+
+static uint8_t tesla_speed_profile_get_hw(const CANPacket_t *msg) {
+  bool all_zero = true;
+  for (int i = 0; i < 8; i++) {
+    if (msg->data[i] != 0U) {
+      all_zero = false;
+    }
+  }
+
+  uint8_t hw = TESLA_SPEED_PROFILE_HW_UNKNOWN;
+  if (!all_zero) {
+    const uint8_t raw_hw = (msg->data[0] >> 6) & 0x3U;
+    if ((raw_hw == TESLA_SPEED_PROFILE_HW3) && !tesla_fsd_14) {
+      hw = TESLA_SPEED_PROFILE_HW3;
+    } else if ((raw_hw == TESLA_SPEED_PROFILE_HW4) && tesla_fsd_14) {
+      hw = TESLA_SPEED_PROFILE_HW4;
+    } else {
+    }
+  }
+  return hw;
+}
+
+static void tesla_speed_profile_update_value(const CANPacket_t *msg) {
+  const uint8_t follow_distance = (msg->data[5] >> 5) & 0x7U;
+  uint8_t profile = 0U;
+  bool valid = false;
+
+  if (tesla_speed_profile_hw == TESLA_SPEED_PROFILE_HW3) {
+    if ((follow_distance >= 1U) && (follow_distance <= 3U)) {
+      profile = 3U - follow_distance;
+      valid = true;
+    }
+  } else if (tesla_speed_profile_hw == TESLA_SPEED_PROFILE_HW4) {
+    if ((follow_distance >= 1U) && (follow_distance <= 4U)) {
+      profile = 4U - follow_distance;
+      valid = true;
+    } else if (follow_distance == 5U) {
+      profile = 4U;
+      valid = true;
+    } else {
+    }
+  } else {
+  }
+
+  if (valid) {
+    if (!tesla_speed_profile_value_valid || (profile != tesla_speed_profile_value)) {
+      // A changed source value needs a new stock frame to shadow.
+      tesla_speed_profile_reset_baselines();
+    }
+    tesla_speed_profile_value = profile;
+    tesla_speed_profile_value_valid = true;
+  }
+}
+
+static void tesla_speed_profile_update_engagement(bool cruise_engaged) {
+  const bool engaged = controls_allowed && cruise_engaged;
+  if (engaged && !tesla_speed_profile_engaged) {
+    tesla_speed_profile_engaged = true;
+    tesla_speed_profile_engaged_ts = microsecond_timer_get();
+  } else if (!engaged) {
+    tesla_speed_profile_engaged = false;
+    tesla_speed_profile_engaged_ts = 0U;
+  } else {
+  }
+}
+
+static bool tesla_speed_profile_tx_check(const CANPacket_t *msg) {
+  const uint32_t now = microsecond_timer_get();
+
+  if (!controls_allowed || !cruise_engaged_prev) {
+    tesla_speed_profile_engaged = false;
+    tesla_speed_profile_engaged_ts = 0U;
+  }
+
+  const bool stable_engagement = tesla_speed_profile_engaged &&
+                                 (safety_get_ts_elapsed(now, tesla_speed_profile_engaged_ts) >= TESLA_SPEED_PROFILE_ENGAGED_MIN_US);
+  const uint8_t mux = msg->data[0] & 0x7U;
+  const uint8_t expected_mux = (tesla_speed_profile_hw == TESLA_SPEED_PROFILE_HW3) ? 0U : 2U;
+  bool valid = tesla_speed_profile && !relay_malfunction && !tesla_stock_aeb && stable_engagement && tesla_speed_profile_value_valid &&
+               ((tesla_speed_profile_hw == TESLA_SPEED_PROFILE_HW3) || (tesla_speed_profile_hw == TESLA_SPEED_PROFILE_HW4)) &&
+               (msg->bus == 2U) && (GET_LEN(msg) == 8U) && (mux == expected_mux) && tesla_speed_profile_baseline_valid[mux] &&
+               (safety_get_ts_elapsed(now, tesla_speed_profile_baseline_ts[mux]) <= TESLA_SPEED_PROFILE_BASELINE_MAX_AGE_US);
+
+  uint8_t target_byte = 0U;
+  uint8_t target_mask = 0U;
+  uint8_t expected_target = 0U;
+  if (tesla_speed_profile_hw == TESLA_SPEED_PROFILE_HW3) {
+    target_byte = 6U;
+    target_mask = 0x06U;
+    expected_target = (tesla_speed_profile_value << 1) & target_mask;
+    // HW3 only applies the profile while the live mux-0 frame says FSD is selected.
+    valid = valid && ((tesla_speed_profile_baseline[mux][4] & 0x40U) != 0U);
+  } else if (tesla_speed_profile_hw == TESLA_SPEED_PROFILE_HW4) {
+    target_byte = 7U;
+    target_mask = 0xE0U;
+    expected_target = (tesla_speed_profile_value << 5) & target_mask;
+  } else {
+    valid = false;
+  }
+
+  for (int i = 0; i < 8; i++) {
+    const uint8_t allowed_mask = ((uint8_t)i == target_byte) ? target_mask : 0U;
+    valid = valid && (((msg->data[i] ^ tesla_speed_profile_baseline[mux][i]) & ((uint8_t)~allowed_mask)) == 0U);
+  }
+  const bool target_changed = ((msg->data[target_byte] ^ tesla_speed_profile_baseline[mux][target_byte]) & target_mask) != 0U;
+  valid = valid && target_changed;
+  valid = valid && ((msg->data[target_byte] & target_mask) == expected_target);
+
+  if (valid) {
+    // Each stock frame is authorization for exactly one shadow frame.
+    tesla_speed_profile_baseline_valid[mux] = false;
+  }
+  return valid;
+}
+
 static void tesla_rx_hook(const CANPacket_t *msg) {
 
   if (msg->bus == 0U) {
@@ -192,10 +336,40 @@ static void tesla_rx_hook(const CANPacket_t *msg) {
       cruise_engaged = cruise_engaged && !tesla_autopark;
 
       pcm_cruise_check(cruise_engaged);
+      if (tesla_speed_profile) {
+        tesla_speed_profile_update_engagement(cruise_engaged);
+      }
     }
 
     if (msg->addr == 0x155U) {
       vehicle_moving = !GET_BIT(msg, 41U);  // ESP_vehicleStandstillSts
+    }
+
+    if (tesla_speed_profile && (msg->addr == 0x398U)) {
+      const uint8_t hw = tesla_speed_profile_get_hw(msg);
+      if (hw != tesla_speed_profile_hw) {
+        tesla_speed_profile_hw = hw;
+        tesla_speed_profile_value = 0U;
+        tesla_speed_profile_value_valid = false;
+        tesla_speed_profile_reset_baselines();
+      }
+    }
+
+    if (tesla_speed_profile && (msg->addr == 0x3F8U)) {
+      tesla_speed_profile_update_value(msg);
+    }
+
+    if (tesla_speed_profile && (msg->addr == 0x3FDU) && tesla_speed_profile_value_valid) {
+      const uint8_t mux = msg->data[0] & 0x7U;
+      const bool target_mux = ((tesla_speed_profile_hw == TESLA_SPEED_PROFILE_HW3) && (mux == 0U)) ||
+                              ((tesla_speed_profile_hw == TESLA_SPEED_PROFILE_HW4) && (mux == 2U));
+      if (target_mux) {
+        for (int i = 0; i < 8; i++) {
+          tesla_speed_profile_baseline[mux][i] = msg->data[i];
+        }
+        tesla_speed_profile_baseline_valid[mux] = true;
+        tesla_speed_profile_baseline_ts[mux] = microsecond_timer_get();
+      }
     }
   }
 
@@ -325,6 +499,11 @@ static bool tesla_tx_hook(const CANPacket_t *msg) {
     }
   }
 
+  // UI_autopilotControl: one-shot speed-profile shadow frame.
+  if (msg->addr == 0x3FDU) {
+    violation = violation || !tesla_speed_profile_tx_check(msg);
+  }
+
   if (violation) {
     tx = false;
   }
@@ -371,6 +550,20 @@ static safety_config tesla_init(uint16_t param) {
     {0x27D, 0, 3, .check_relay = true, .disable_static_blocking = true},  // APS_eacMonitor
   };
 
+  static const CanMsg TESLA_M3_Y_SPEED_PROFILE_TX_MSGS[] = {
+    {0x488, 0, 4, .check_relay = true, .disable_static_blocking = true},   // DAS_steeringControl
+    {0x2b9, 0, 8, .check_relay = false},                                  // DAS_control (for cancel)
+    {0x27D, 0, 3, .check_relay = true, .disable_static_blocking = true},   // APS_eacMonitor
+    {0x3FD, 2, 8, .check_relay = false},                                  // UI_autopilotControl shadow
+  };
+
+  static const CanMsg TESLA_M3_Y_LONG_SPEED_PROFILE_TX_MSGS[] = {
+    {0x488, 0, 4, .check_relay = true, .disable_static_blocking = true},  // DAS_steeringControl
+    {0x2b9, 0, 8, .check_relay = true, .disable_static_blocking = true},  // DAS_control
+    {0x27D, 0, 3, .check_relay = true, .disable_static_blocking = true},  // APS_eacMonitor
+    {0x3FD, 2, 8, .check_relay = false},                                 // UI_autopilotControl shadow
+  };
+
   const uint16_t TESLA_FLAG_FSD_14 = 2;
   tesla_fsd_14 = GET_FLAG(param, TESLA_FLAG_FSD_14);
 
@@ -380,8 +573,10 @@ static safety_config tesla_init(uint16_t param) {
 #endif
 
   const uint16_t TESLA_PARAM_SP_VEHICLE_BUS = 1;
+  const uint16_t TESLA_PARAM_SP_SPEED_PROFILE = 2;
 
   tesla_has_vehicle_bus = GET_FLAG(current_safety_param_sp, TESLA_PARAM_SP_VEHICLE_BUS);
+  tesla_speed_profile = GET_FLAG(current_safety_param_sp, TESLA_PARAM_SP_SPEED_PROFILE);
 
   tesla_stock_aeb = false;
   tesla_stock_lkas = false;
@@ -390,6 +585,12 @@ static safety_config tesla_init(uint16_t param) {
   // this is so that we don't fault if starting while these systems are active
   tesla_autopark = true;
   tesla_autopark_prev = false;
+  tesla_speed_profile_hw = TESLA_SPEED_PROFILE_HW_UNKNOWN;
+  tesla_speed_profile_value = 0U;
+  tesla_speed_profile_value_valid = false;
+  tesla_speed_profile_engaged = false;
+  tesla_speed_profile_engaged_ts = 0U;
+  tesla_speed_profile_reset_baselines();
 
   static RxCheck tesla_model3_y_rx_checks[] = {
     TESLA_COMMON_RX_CHECKS
@@ -400,15 +601,38 @@ static safety_config tesla_init(uint16_t param) {
     TESLA_VEHICLE_BUS_ADDR_CHECK
   };
 
+  static RxCheck tesla_model3_y_speed_profile_rx_checks[] = {
+    TESLA_COMMON_RX_CHECKS
+    TESLA_SPEED_PROFILE_RX_CHECKS
+  };
+
+  static RxCheck tesla_model3_y_vehicle_bus_speed_profile_rx_checks[] = {
+    TESLA_COMMON_RX_CHECKS
+    TESLA_VEHICLE_BUS_ADDR_CHECK
+    TESLA_SPEED_PROFILE_RX_CHECKS
+  };
+
   safety_config ret;
   if (tesla_longitudinal) {
-    SET_TX_MSGS(TESLA_M3_Y_LONG_TX_MSGS, ret);
+    if (tesla_speed_profile) {
+      SET_TX_MSGS(TESLA_M3_Y_LONG_SPEED_PROFILE_TX_MSGS, ret);
+    } else {
+      SET_TX_MSGS(TESLA_M3_Y_LONG_TX_MSGS, ret);
+    }
   } else {
-    SET_TX_MSGS(TESLA_M3_Y_TX_MSGS, ret);
+    if (tesla_speed_profile) {
+      SET_TX_MSGS(TESLA_M3_Y_SPEED_PROFILE_TX_MSGS, ret);
+    } else {
+      SET_TX_MSGS(TESLA_M3_Y_TX_MSGS, ret);
+    }
   }
 
-  if (tesla_has_vehicle_bus) {
+  if (tesla_has_vehicle_bus && tesla_speed_profile) {
+    SET_RX_CHECKS(tesla_model3_y_vehicle_bus_speed_profile_rx_checks, ret);
+  } else if (tesla_has_vehicle_bus) {
     SET_RX_CHECKS(tesla_model3_y_vehicle_bus_rx_checks, ret);
+  } else if (tesla_speed_profile) {
+    SET_RX_CHECKS(tesla_model3_y_speed_profile_rx_checks, ret);
   } else {
     SET_RX_CHECKS(tesla_model3_y_rx_checks, ret);
   }

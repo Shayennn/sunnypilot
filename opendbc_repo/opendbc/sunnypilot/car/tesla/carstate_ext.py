@@ -11,6 +11,7 @@ from opendbc.can.parser import CANParser
 from opendbc.car.common.conversions import Conversions as CV
 from opendbc.car.tesla.values import DBC, CANBUS
 from opendbc.sunnypilot.car.tesla.values import TeslaFlagsSP
+from opendbc.sunnypilot.car.tesla.speed_profile import TeslaSpeedProfileState
 
 ButtonType = structs.CarState.ButtonEvent.Type
 
@@ -21,6 +22,7 @@ class CarStateExt:
     self.CP_SP = CP_SP
 
     self.infotainment_3_finger_press = 0
+    self.speed_profile = TeslaSpeedProfileState(CP, CP_SP)
 
   def update(self, ret: structs.CarState, ret_sp: structs.CarStateSP, can_parsers: dict[StrEnum, CANParser]) -> None:
     if self.CP_SP.flags & TeslaFlagsSP.HAS_VEHICLE_BUS:
@@ -44,6 +46,12 @@ class CarStateExt:
         ret_sp.speedLimit = speed_limit * CV.KPH_TO_MS
       elif speed_units == "MPH":
         ret_sp.speedLimit = speed_limit * CV.MPH_TO_MS
+
+    self.speed_profile.update(cp_party)
+
+  @staticmethod
+  def get_party_parser_messages(CP_SP: structs.CarParamsSP) -> list[tuple[str, float]]:
+    return TeslaSpeedProfileState.parser_messages(bool(CP_SP.flags & TeslaFlagsSP.SPEED_PROFILE))
 
   @staticmethod
   def get_parser(CP: structs.CarParams, CP_SP: structs.CarParamsSP) -> dict[StrEnum, CANParser]:

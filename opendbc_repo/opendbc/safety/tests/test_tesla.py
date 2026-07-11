@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+from types import SimpleNamespace
 import random
 import unittest
 import numpy as np
@@ -14,11 +15,19 @@ from opendbc.safety.tests.libsafety import libsafety_py
 import opendbc.safety.tests.common as common
 from opendbc.safety.tests.common import CANPackerSafety, MAX_SPEED_DELTA, MAX_WRONG_COUNTERS, away_round, round_speed
 
-from opendbc.sunnypilot.car.tesla.values import TeslaSafetyFlagsSP
+from opendbc.sunnypilot.car.tesla.speed_profile import (
+  AP_FIRST_STABLE_FRAMES,
+  SpeedProfileProtocol,
+  TeslaSpeedProfileCarController,
+)
+from opendbc.sunnypilot.car.tesla.values import TeslaFlagsSP, TeslaSafetyFlagsSP
 
 MSG_DAS_steeringControl = 0x488
 MSG_APS_eacMonitor = 0x27d
 MSG_DAS_Control = 0x2b9
+MSG_GTW_carConfig = 0x398
+MSG_UI_driverAssistControl = 0x3f8
+MSG_UI_autopilotControl = 0x3fd
 
 
 def round_angle(apply_angle, can_offset=0):
@@ -457,6 +466,424 @@ class TestTeslaLongitudinalSafety(TestTeslaSafetyBase):
 
 class TestTeslaFSD14LongitudinalSafety(TestTeslaLongitudinalSafety):
   SAFETY_PARAM = TeslaSafetyFlags.LONG_CONTROL | TeslaSafetyFlags.FSD_14
+
+
+class TestTeslaSpeedProfileSafety(unittest.TestCase):
+  """Security boundary for the opt-in, stock-frame-shadowed speed profile."""
+
+  TX_MSGS = [[MSG_UI_autopilotControl, 2]]
+  ENGAGED_MIN_US = 1_000_000
+  BASELINE_MAX_AGE_US = 100_000
+
+  HW3 = {
+    "raw_hw": 2,
+    "fsd14": False,
+    "mux": 0,
+    "target_byte": 6,
+    "target_mask": 0x06,
+    "shift": 1,
+    "mapping": {1: 2, 2: 1, 3: 0},
+  }
+  HW4 = {
+    "raw_hw": 3,
+    "fsd14": True,
+    "mux": 2,
+    "target_byte": 7,
+    "target_mask": 0xE0,
+    "shift": 5,
+    "mapping": {1: 3, 2: 2, 3: 1, 4: 0, 5: 4},
+  }
+
+  def setUp(self):
+    self.safety = libsafety_py.libsafety
+    self.packer = CANPackerSafety("tesla_model3_party")
+    self._set_mode(speed_profile=True, fsd14=False)
+
+  def _set_mode(self, speed_profile: bool, fsd14: bool, longitudinal: bool = False, vehicle_bus: bool = False):
+    param_sp = 0
+    if speed_profile:
+      param_sp |= TeslaSafetyFlagsSP.SPEED_PROFILE
+    if vehicle_bus:
+      param_sp |= TeslaSafetyFlagsSP.HAS_VEHICLE_BUS
+
+    param = 0
+    if fsd14:
+      param |= TeslaSafetyFlags.FSD_14
+    if longitudinal:
+      param |= TeslaSafetyFlags.LONG_CONTROL
+    self.safety.set_current_safety_param_sp(param_sp)
+    self.safety.set_safety_hooks(CarParams.SafetyModel.tesla, param)
+    self.safety.init_tests()
+
+  def _rx(self, msg):
+    return self.safety.safety_rx_hook(msg)
+
+  def _tx(self, msg):
+    return self.safety.safety_tx_hook(msg)
+
+  @staticmethod
+  def _raw_msg(addr: int, bus: int, dat: bytes | bytearray):
+    return common.make_msg(bus, addr, len(dat), bytes(dat))
+
+  def _hw_msg(self, raw_hw: int, bus: int = 0, length: int = 8, all_zero: bool = False):
+    dat = bytearray(8)
+    if not all_zero:
+      dat[0] = ((raw_hw & 0x3) << 6) | 0x15
+      dat[1:] = b"\x21\x32\x43\x54\x65\x76\x87"
+    return self._raw_msg(MSG_GTW_carConfig, bus, dat[:length])
+
+  def _follow_distance_msg(self, follow_distance: int, bus: int = 0, length: int = 8):
+    dat = bytearray(b"\x11\x22\x33\x44\x55\x1b\x77\x88")
+    dat[5] = ((follow_distance & 0x7) << 5) | 0x1b
+    return self._raw_msg(MSG_UI_driverAssistControl, bus, dat[:length])
+
+  def _baseline_data(self, protocol, fsd_selected: bool = True, mux: int | None = None):
+    mux = protocol["mux"] if mux is None else mux
+    dat = bytearray(b"\xa8\x12\x34\x56\x18\x9a\xd1\x17")
+    dat[0] = (dat[0] & 0xf8) | (mux & 0x7)
+    if fsd_selected:
+      dat[4] |= 0x40
+    else:
+      dat[4] &= ~0x40
+    # Use an out-of-range stock value so every mapped target is a real mutation.
+    byte = protocol["target_byte"]
+    mask = protocol["target_mask"]
+    dat[byte] = (dat[byte] & ~mask) | mask
+    return dat
+
+  def _baseline_msg(self, dat: bytes | bytearray, bus: int = 0, length: int = 8):
+    return self._raw_msg(MSG_UI_autopilotControl, bus, dat[:length])
+
+  def _candidate_msg(self, baseline: bytes | bytearray, protocol, profile: int, bus: int = 2, length: int = 8):
+    dat = bytearray(baseline)
+    byte = protocol["target_byte"]
+    mask = protocol["target_mask"]
+    dat[byte] = (dat[byte] & ~mask) | ((profile << protocol["shift"]) & mask)
+    return self._raw_msg(MSG_UI_autopilotControl, bus, dat[:length])
+
+  def _pcm_status_msg(self, enabled: bool):
+    values = {"DI_cruiseState": 2 if enabled else 0, "DI_autoparkState": 0}
+    return self.packer.make_can_msg_safety("DI_state", 0, values)
+
+  def _prime_mandatory_rx_checks(self):
+    msgs = (
+      self.packer.make_can_msg_safety("DAS_control", 2, {}),
+      self.packer.make_can_msg_safety("DAS_steeringControl", 2, {"DAS_steeringControlType": 0}),
+      self.packer.make_can_msg_safety("DI_speed", 0, {"DI_vehicleSpeed": 0}),
+      self.packer.make_can_msg_safety("ESP_B", 0, {"ESP_vehicleSpeed": 0, "ESP_wheelSpeedsQF": 1,
+                                                    "ESP_vehicleStandstillSts": 1}),
+      self.packer.make_can_msg_safety("EPAS3S_sysStatus", 0, {"EPAS3S_internalSAS": 0}),
+      self.packer.make_can_msg_safety("DI_systemStatus", 0, {"DI_accelPedalPos": 0}),
+      self.packer.make_can_msg_safety("ESP_status", 0, {"ESP_driverBrakeApply": 1}),
+      self._pcm_status_msg(False),
+      self.packer.make_can_msg_safety("UI_warning", 0, {}),
+    )
+    for msg in msgs:
+      self.assertTrue(self._rx(msg))
+
+  def _configure_protocol(self, protocol, follow_distance: int = 1):
+    self._set_mode(speed_profile=True, fsd14=protocol["fsd14"])
+    self.assertTrue(self._rx(self._hw_msg(protocol["raw_hw"])))
+    self.assertTrue(self._rx(self._follow_distance_msg(follow_distance)))
+
+  def _engage(self, elapsed_us: int = ENGAGED_MIN_US):
+    self.safety.set_timer(0)
+    self.assertTrue(self._rx(self._pcm_status_msg(True)))
+    self.safety.set_timer(elapsed_us)
+
+  def _ready(self, protocol, follow_distance: int = 1, fsd_selected: bool = True):
+    self._configure_protocol(protocol, follow_distance)
+    self._engage()
+    baseline = self._baseline_data(protocol, fsd_selected=fsd_selected)
+    self.assertTrue(self._rx(self._baseline_msg(baseline)))
+    return baseline, protocol["mapping"][follow_distance]
+
+  def test_feature_is_off_by_default(self):
+    self._set_mode(speed_profile=False, fsd14=False)
+    baseline = self._baseline_data(self.HW3)
+    candidate = self._candidate_msg(baseline, self.HW3, 2)
+    self.assertFalse(self._tx(candidate))
+    self.assertEqual(2, self.safety.safety_fwd_hook(0, MSG_UI_autopilotControl))
+    self.assertEqual(0, self.safety.safety_fwd_hook(2, MSG_UI_autopilotControl))
+
+  def test_optional_sources_do_not_participate_in_rx_liveness(self):
+    self._prime_mandatory_rx_checks()
+    self.safety.set_timer(1_000_000)
+    self.safety.set_controls_allowed(True)
+    self.safety.safety_tick_current_safety_config()
+    self.assertTrue(self.safety.get_controls_allowed())
+    self.assertTrue(self.safety.safety_config_valid())
+
+    # Mark every optional source seen, then let only those sources age past their old 10-second threshold.
+    self._rx(self._hw_msg(self.HW3["raw_hw"]))
+    self._rx(self._follow_distance_msg(1))
+    self._rx(self._baseline_msg(self._baseline_data(self.HW3)))
+    self.safety.set_timer(12_000_001)
+    self._prime_mandatory_rx_checks()
+    self.safety.set_controls_allowed(True)
+    self.safety.safety_tick_current_safety_config()
+    self.assertTrue(self.safety.get_controls_allowed())
+    self.assertTrue(self.safety.safety_config_valid())
+
+  def test_flag_composes_with_longitudinal_and_vehicle_bus(self):
+    self._set_mode(speed_profile=True, fsd14=False, longitudinal=True, vehicle_bus=True)
+    self._rx(self._hw_msg(self.HW3["raw_hw"]))
+    self._rx(self._follow_distance_msg(1))
+    self._engage()
+    baseline = self._baseline_data(self.HW3)
+    self._rx(self._baseline_msg(baseline))
+    self.assertTrue(self._tx(self._candidate_msg(baseline, self.HW3, self.HW3["mapping"][1])))
+
+  def test_exact_mapping_for_both_protocols(self):
+    for protocol in (self.HW3, self.HW4):
+      for follow_distance, profile in protocol["mapping"].items():
+        with self.subTest(raw_hw=protocol["raw_hw"], follow_distance=follow_distance, profile=profile):
+          baseline, mapped_profile = self._ready(protocol, follow_distance)
+          self.assertEqual(profile, mapped_profile)
+
+          wrong_profile = (profile + 1) % (3 if protocol is self.HW3 else 5)
+          self.assertFalse(self._tx(self._candidate_msg(baseline, protocol, wrong_profile)))
+          self.assertTrue(self._tx(self._candidate_msg(baseline, protocol, profile)))
+
+  def test_actual_host_controller_output_is_accepted_once(self):
+    host_protocols = {
+      self.HW3["raw_hw"]: SpeedProfileProtocol.hw3,
+      self.HW4["raw_hw"]: SpeedProfileProtocol.hw4_fsd14,
+    }
+    for protocol in (self.HW3, self.HW4):
+      with self.subTest(protocol=protocol["raw_hw"]):
+        baseline, profile = self._ready(protocol)
+        controller = TeslaSpeedProfileCarController(SimpleNamespace(flags=TeslaFlagsSP.SPEED_PROFILE))
+        state = SimpleNamespace(
+          protocol=host_protocols[protocol["raw_hw"]],
+          profile=profile,
+          autopilot_control_frames=[bytes(baseline)],
+        )
+        cs = SimpleNamespace(speed_profile=state)
+        enabled = SimpleNamespace(enabled=True)
+
+        for _ in range(AP_FIRST_STABLE_FRAMES):
+          self.assertEqual([], controller.update_speed_profile(enabled, cs))
+        sends = controller.update_speed_profile(enabled, cs)
+        self.assertEqual(1, len(sends))
+
+        addr, dat, bus = sends[0]
+        candidate = self._raw_msg(addr, bus, dat)
+        self.assertTrue(self._tx(candidate))
+        self.assertFalse(self._tx(candidate))
+
+  def test_unknown_hardware_and_no_default_profile(self):
+    for protocol in (self.HW3, self.HW4):
+      with self.subTest(protocol=protocol["raw_hw"], case="no follow distance"):
+        self._set_mode(speed_profile=True, fsd14=protocol["fsd14"])
+        self._rx(self._hw_msg(protocol["raw_hw"]))
+        self._engage()
+        baseline = self._baseline_data(protocol)
+        self._rx(self._baseline_msg(baseline))
+        self.assertFalse(self._tx(self._candidate_msg(baseline, protocol, next(iter(protocol["mapping"].values())))))
+
+      with self.subTest(protocol=protocol["raw_hw"], case="all-zero clears hardware"):
+        follow_distance, profile = next(iter(protocol["mapping"].items()))
+        self._configure_protocol(protocol, follow_distance)
+        self._rx(self._hw_msg(0, all_zero=True))
+        # An invalid source value leaves no default while hardware is unknown.
+        self._rx(self._follow_distance_msg(0))
+        self._engage()
+        baseline = self._baseline_data(protocol)
+        self._rx(self._baseline_msg(baseline))
+        self.assertFalse(self._tx(self._candidate_msg(baseline, protocol, profile)))
+
+        # Hardware recovery alone is insufficient: a new valid follow-distance source is required.
+        self._rx(self._hw_msg(protocol["raw_hw"]))
+        self._rx(self._baseline_msg(baseline))
+        self.assertFalse(self._tx(self._candidate_msg(baseline, protocol, profile)))
+        self._rx(self._follow_distance_msg(follow_distance))
+        self._rx(self._baseline_msg(baseline))
+        self.assertTrue(self._tx(self._candidate_msg(baseline, protocol, profile)))
+
+  def test_invalid_follow_distance_does_not_replace_valid_value(self):
+    for protocol in (self.HW3, self.HW4):
+      follow_distance, profile = next(iter(protocol["mapping"].items()))
+      for invalid_follow_distance in ({0, 4, 5, 6, 7} - set(protocol["mapping"])):
+        with self.subTest(protocol=protocol["raw_hw"], follow_distance=invalid_follow_distance):
+          self._configure_protocol(protocol, follow_distance)
+          self._rx(self._follow_distance_msg(invalid_follow_distance))
+          self._engage()
+          baseline = self._baseline_data(protocol)
+          self._rx(self._baseline_msg(baseline))
+          self.assertTrue(self._tx(self._candidate_msg(baseline, protocol, profile)))
+
+  def test_follow_distance_updates_only_invalidate_baseline_on_profile_change(self):
+    for protocol in (self.HW3, self.HW4):
+      with self.subTest(protocol=protocol["raw_hw"]):
+        initial_profile = protocol["mapping"][1]
+        changed_profile = protocol["mapping"][2]
+        self._configure_protocol(protocol, follow_distance=1)
+        self._engage()
+        baseline = self._baseline_data(protocol)
+        self._rx(self._baseline_msg(baseline))
+
+        # Repeats and invalid source values preserve both the last valid profile and fresh baseline.
+        self._rx(self._follow_distance_msg(1))
+        for invalid_follow_distance in (0, 6, 7):
+          self._rx(self._follow_distance_msg(invalid_follow_distance))
+        self.assertTrue(self._tx(self._candidate_msg(baseline, protocol, initial_profile)))
+
+        # A genuinely different mapped profile cannot shadow a baseline captured for the old value.
+        self._rx(self._baseline_msg(baseline))
+        self._rx(self._follow_distance_msg(2))
+        self.assertFalse(self._tx(self._candidate_msg(baseline, protocol, changed_profile)))
+        self._rx(self._baseline_msg(baseline))
+        self.assertTrue(self._tx(self._candidate_msg(baseline, protocol, changed_profile)))
+
+  def test_protocol_must_match_fsd14(self):
+    mismatches = ((False, 0), (False, 1), (False, 3), (True, 0), (True, 1), (True, 2))
+    for fsd14, raw_hw in mismatches:
+      with self.subTest(fsd14=fsd14, raw_hw=raw_hw):
+        protocol = self.HW4 if fsd14 else self.HW3
+        self._set_mode(speed_profile=True, fsd14=fsd14)
+        self._rx(self._hw_msg(raw_hw))
+        self._rx(self._follow_distance_msg(1))
+        self._engage()
+        baseline = self._baseline_data(protocol)
+        self._rx(self._baseline_msg(baseline))
+        self.assertFalse(self._tx(self._candidate_msg(baseline, protocol, protocol["mapping"][1])))
+
+  def test_source_and_tx_bus_and_dlc_are_exact(self):
+    for protocol in (self.HW3, self.HW4):
+      profile = protocol["mapping"][1]
+
+      for bad_bus, bad_length in ((1, 8), (0, 7)):
+        with self.subTest(protocol=protocol["raw_hw"], source="hardware", bus=bad_bus, length=bad_length):
+          self._set_mode(speed_profile=True, fsd14=protocol["fsd14"])
+          self._rx(self._hw_msg(protocol["raw_hw"], bus=bad_bus, length=bad_length))
+          self._rx(self._follow_distance_msg(1))
+          self._engage()
+          baseline = self._baseline_data(protocol)
+          self._rx(self._baseline_msg(baseline))
+          self.assertFalse(self._tx(self._candidate_msg(baseline, protocol, profile)))
+
+      for bad_bus, bad_length in ((1, 8), (0, 7)):
+        with self.subTest(protocol=protocol["raw_hw"], source="follow distance", bus=bad_bus, length=bad_length):
+          self._set_mode(speed_profile=True, fsd14=protocol["fsd14"])
+          self._rx(self._hw_msg(protocol["raw_hw"]))
+          self._rx(self._follow_distance_msg(1, bus=bad_bus, length=bad_length))
+          self._engage()
+          baseline = self._baseline_data(protocol)
+          self._rx(self._baseline_msg(baseline))
+          self.assertFalse(self._tx(self._candidate_msg(baseline, protocol, profile)))
+
+      for bad_bus, bad_length in ((1, 8), (0, 7)):
+        with self.subTest(protocol=protocol["raw_hw"], source="baseline", bus=bad_bus, length=bad_length):
+          self._configure_protocol(protocol)
+          self._engage()
+          baseline = self._baseline_data(protocol)
+          self._rx(self._baseline_msg(baseline, bus=bad_bus, length=bad_length))
+          self.assertFalse(self._tx(self._candidate_msg(baseline, protocol, profile)))
+
+      with self.subTest(protocol=protocol["raw_hw"], source="tx"):
+        baseline, profile = self._ready(protocol)
+        self.assertFalse(self._tx(self._candidate_msg(baseline, protocol, profile, bus=0)))
+        self.assertFalse(self._tx(self._candidate_msg(baseline, protocol, profile, length=7)))
+        # Wrongly routed/DLC'd attempts never consume the valid baseline.
+        self.assertTrue(self._tx(self._candidate_msg(baseline, protocol, profile)))
+
+  def test_requires_fresh_once_only_baseline_for_target_mux(self):
+    for protocol in (self.HW3, self.HW4):
+      with self.subTest(protocol=protocol["raw_hw"], case="no baseline"):
+        self._configure_protocol(protocol)
+        self._engage()
+        baseline = self._baseline_data(protocol)
+        self.assertFalse(self._tx(self._candidate_msg(baseline, protocol, protocol["mapping"][1])))
+
+      with self.subTest(protocol=protocol["raw_hw"], case="wrong mux"):
+        self._configure_protocol(protocol)
+        self._engage()
+        baseline = self._baseline_data(protocol)
+        wrong_mux_baseline = self._baseline_data(protocol, mux=(protocol["mux"] + 1) % 8)
+        self._rx(self._baseline_msg(wrong_mux_baseline))
+        self.assertFalse(self._tx(self._candidate_msg(baseline, protocol, protocol["mapping"][1])))
+
+      with self.subTest(protocol=protocol["raw_hw"], case="stale"):
+        baseline, profile = self._ready(protocol)
+        self.safety.set_timer(self.ENGAGED_MIN_US + self.BASELINE_MAX_AGE_US + 1)
+        self.assertFalse(self._tx(self._candidate_msg(baseline, protocol, profile)))
+
+      with self.subTest(protocol=protocol["raw_hw"], case="fresh boundary and replay"):
+        baseline, profile = self._ready(protocol)
+        self.safety.set_timer(self.ENGAGED_MIN_US + self.BASELINE_MAX_AGE_US)
+        candidate = self._candidate_msg(baseline, protocol, profile)
+        self.assertTrue(self._tx(candidate))
+        self.assertFalse(self._tx(candidate))
+
+  def test_unchanged_baseline_is_not_an_injection_and_does_not_consume_it(self):
+    for protocol in (self.HW3, self.HW4):
+      with self.subTest(protocol=protocol["raw_hw"]):
+        baseline, profile = self._ready(protocol)
+        self.assertFalse(self._tx(self._baseline_msg(baseline, bus=2)))
+        self.assertTrue(self._tx(self._candidate_msg(baseline, protocol, profile)))
+
+  def test_requires_stable_live_engagement(self):
+    for protocol in (self.HW3, self.HW4):
+      profile = protocol["mapping"][1]
+      with self.subTest(protocol=protocol["raw_hw"], case="not engaged"):
+        self._configure_protocol(protocol)
+        baseline = self._baseline_data(protocol)
+        self._rx(self._baseline_msg(baseline))
+        self.assertFalse(self._tx(self._candidate_msg(baseline, protocol, profile)))
+
+      with self.subTest(protocol=protocol["raw_hw"], case="unstable"):
+        self._configure_protocol(protocol)
+        self._engage(self.ENGAGED_MIN_US - 1)
+        baseline = self._baseline_data(protocol)
+        self._rx(self._baseline_msg(baseline))
+        self.assertFalse(self._tx(self._candidate_msg(baseline, protocol, profile)))
+        self.safety.set_timer(self.ENGAGED_MIN_US)
+        self.assertTrue(self._tx(self._candidate_msg(baseline, protocol, profile)))
+
+      with self.subTest(protocol=protocol["raw_hw"], case="disengaged"):
+        baseline, profile = self._ready(protocol)
+        self._rx(self._pcm_status_msg(False))
+        self.assertFalse(self._tx(self._candidate_msg(baseline, protocol, profile)))
+
+  def test_stock_aeb_rejects_without_consuming_baseline(self):
+    for protocol in (self.HW3, self.HW4):
+      with self.subTest(protocol=protocol["raw_hw"]):
+        baseline, profile = self._ready(protocol)
+        candidate = self._candidate_msg(baseline, protocol, profile)
+
+        self.assertTrue(self._rx(self.packer.make_can_msg_safety("DAS_control", 2, {"DAS_aebEvent": 1})))
+        self.assertFalse(self._tx(candidate))
+
+        self.assertTrue(self._rx(self.packer.make_can_msg_safety("DAS_control", 2, {"DAS_aebEvent": 0})))
+        self.assertTrue(self._tx(candidate))
+
+  def test_hw3_requires_live_fsd_selection(self):
+    baseline, profile = self._ready(self.HW3, fsd_selected=False)
+    self.assertFalse(self._tx(self._candidate_msg(baseline, self.HW3, profile)))
+
+    baseline = self._baseline_data(self.HW3, fsd_selected=True)
+    self._rx(self._baseline_msg(baseline))
+    self.assertTrue(self._tx(self._candidate_msg(baseline, self.HW3, profile)))
+
+  def test_every_non_target_bit_is_immutable_and_forwarding_remains(self):
+    for protocol in (self.HW3, self.HW4):
+      baseline, profile = self._ready(protocol)
+      target_bits = {protocol["target_byte"] * 8 + bit for bit in range(8) if protocol["target_mask"] & (1 << bit)}
+
+      for bit in range(64):
+        if bit in target_bits:
+          continue
+        with self.subTest(protocol=protocol["raw_hw"], bit=bit):
+          self._rx(self._baseline_msg(baseline))
+          candidate = self._candidate_msg(baseline, protocol, profile)
+          candidate[0].data[bit // 8] ^= 1 << (bit % 8)
+          self.assertFalse(self._tx(candidate))
+
+      self._rx(self._baseline_msg(baseline))
+      self.assertTrue(self._tx(self._candidate_msg(baseline, protocol, profile)))
+      self.assertEqual(2, self.safety.safety_fwd_hook(0, MSG_UI_autopilotControl))
+      self.assertEqual(0, self.safety.safety_fwd_hook(2, MSG_UI_autopilotControl))
 
 
 class TestTeslaIgnition(unittest.TestCase):

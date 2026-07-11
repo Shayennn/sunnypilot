@@ -2161,6 +2161,18 @@
               "type": "offroad_only"
             }
           ]
+        },
+        {
+          "key": "TeslaSpeedProfile",
+          "widget": "toggle",
+          "needs_onroad_cycle": true,
+          "title": "Tesla Speed Profile (Experimental)",
+          "description": "With factory longitudinal control, mirrors the Tesla follow-distance selector into Tesla's stock speed-profile field. Only recognized HW3 and FSD 14 message layouts are supported. HW3 follow-distance mapping is community-derived and may vary by firmware; validate it against a vehicle CAN capture before use. Experimental Tesla CAN message injection may affect Autopilot engagement; disable this setting if engagement changes. Changes take effect on the next drive.",
+          "enablement": [
+            {
+              "type": "offroad_only"
+            }
+          ]
         }
       ]
     },

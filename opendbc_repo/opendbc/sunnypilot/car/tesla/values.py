@@ -10,7 +10,9 @@ from enum import IntFlag
 class TeslaFlagsSP(IntFlag):
   HAS_VEHICLE_BUS = 1  # 3-finger infotainment press signal is present on the VEHICLE bus with the deprecated Tesla harness installed
   COOP_STEERING = 2  # Coop steering
+  SPEED_PROFILE = 4  # Mirror the stock follow-distance selection into Tesla's speed profile
 
 
 class TeslaSafetyFlagsSP:
   HAS_VEHICLE_BUS = 1
+  SPEED_PROFILE = 2
