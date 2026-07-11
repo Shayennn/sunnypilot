@@ -36,9 +36,6 @@ SIMULATION = "SIMULATION" in os.environ
 TESTING_CLOSET = "TESTING_CLOSET" in os.environ
 
 LONGITUDINAL_PERSONALITY_MAP = {v: k for k, v in log.LongitudinalPersonality.schema.enumerants.items()}
-LONGITUDINAL_PERSONALITY_MIN = min(log.LongitudinalPersonality.schema.enumerants.values())
-LONGITUDINAL_PERSONALITY_MAX = max(log.LongitudinalPersonality.schema.enumerants.values())
-LONGITUDINAL_PERSONALITY_COUNT = LONGITUDINAL_PERSONALITY_MAX - LONGITUDINAL_PERSONALITY_MIN + 1
 
 ThermalStatus = log.DeviceState.ThermalStatus
 State = log.SelfdriveState.OpenpilotState
@@ -94,7 +91,7 @@ class SelfdriveD(CruiseHelper):
     # TODO: de-couple selfdrived with card/conflate on carState without introducing controls mismatches
     self.car_state_sock = messaging.sub_sock('carState', timeout=20)
 
-    ignore = self.sensor_packets + self.gps_packets + ['alertDebug', 'lateralManeuverPlan'] + ['modelDataV2SP', 'carStateSP']
+    ignore = self.sensor_packets + self.gps_packets + ['alertDebug', 'lateralManeuverPlan'] + ['modelDataV2SP']
     if SIMULATION:
       ignore += ['driverCameraState', 'managerState']
     if REPLAY:
@@ -104,7 +101,7 @@ class SelfdriveD(CruiseHelper):
                                    'carOutput', 'driverMonitoringState', 'longitudinalPlan', 'livePose', 'liveDelay',
                                    'managerState', 'liveParameters', 'radarState', 'liveTorqueParameters',
                                    'controlsState', 'carControl', 'driverAssistance', 'alertDebug', 'userBookmark', 'audioFeedback',
-                                   'lateralManeuverPlan', 'modelDataV2SP', 'longitudinalPlanSP', 'carStateSP'] + \
+                                   'lateralManeuverPlan', 'modelDataV2SP', 'longitudinalPlanSP'] + \
                                    self.camera_packets + self.sensor_packets + self.gps_packets,
                                   ignore_alive=ignore, ignore_avg_freq=ignore,
                                   ignore_valid=ignore, frequency=int(1/DT_CTRL))
@@ -140,11 +137,10 @@ class SelfdriveD(CruiseHelper):
     self.experimental_mode = False
     self.personality = get_sanitize_int_param(
       "LongitudinalPersonality",
-      LONGITUDINAL_PERSONALITY_MIN,
-      LONGITUDINAL_PERSONALITY_MAX,
+      min(log.LongitudinalPersonality.schema.enumerants.values()),
+      max(log.LongitudinalPersonality.schema.enumerants.values()),
       self.params
     )
-    self._last_car_personality_request: int | None = None
     self.recalibrating_seen = False
     self.dm_lockout_set = False
     self.dm_uncertain_alerted = False
@@ -476,49 +472,16 @@ class SelfdriveD(CruiseHelper):
 
     CruiseHelper.update(self, CS, self.events_sp, self.experimental_mode)
 
-    self._update_longitudinal_personality(CS)
+    # decrement personality on distance button press
+    if self.CP.openpilotLongitudinalControl:
+      if any(not be.pressed and be.type == ButtonType.gapAdjustCruise for be in CS.buttonEvents):
+        if not self.experimental_mode_switched:
+          self.personality = (self.personality - 1) % 3
+          self.params.put('LongitudinalPersonality', self.personality)
+          self.events.add(EventName.personalityChanged)
+        self.experimental_mode_switched = False
 
     self.icbm.run(CS, self.sm['carControl'], self.sm['longitudinalPlanSP'], self.is_metric)
-
-  def _set_longitudinal_personality(self, personality: int) -> bool:
-    if not LONGITUDINAL_PERSONALITY_MIN <= personality <= LONGITUDINAL_PERSONALITY_MAX:
-      return False
-    if personality == self.personality:
-      return False
-
-    self.personality = personality
-    self.params.put('LongitudinalPersonality', personality)
-    self.events.add(EventName.personalityChanged)
-    return True
-
-  def _update_longitudinal_personality(self, CS) -> None:
-    if not self.CP.openpilotLongitudinalControl:
-      self._last_car_personality_request = None
-      return
-
-    request = self.sm['carStateSP']
-    requested_personality = int(request.longitudinalPersonalityRequest)
-    request_valid = (self.sm.valid['carStateSP'] and
-                     request.longitudinalPersonalityRequestValid and
-                     LONGITUDINAL_PERSONALITY_MIN <= requested_personality <= LONGITUDINAL_PERSONALITY_MAX)
-
-    request_changed = False
-    if request_valid:
-      request_changed = requested_personality != self._last_car_personality_request
-      self._last_car_personality_request = requested_personality
-      if request_changed:
-        self._set_longitudinal_personality(requested_personality)
-    else:
-      self._last_car_personality_request = None
-
-    # Cars without an absolute request continue to cycle personality on a
-    # distance-button release. An absolute request wins if both arrive together.
-    if any(not be.pressed and be.type == ButtonType.gapAdjustCruise for be in CS.buttonEvents):
-      if not self.experimental_mode_switched and not request_valid:
-        personality = ((self.personality - LONGITUDINAL_PERSONALITY_MIN - 1) %
-                       LONGITUDINAL_PERSONALITY_COUNT) + LONGITUDINAL_PERSONALITY_MIN
-        self._set_longitudinal_personality(personality)
-      self.experimental_mode_switched = False
 
   def data_sample(self):
     _car_state = messaging.recv_one(self.car_state_sock)

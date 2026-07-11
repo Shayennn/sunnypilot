@@ -136,7 +136,7 @@ class CarState(CarStateBase, CarStateExt):
           carlog.error("FSD 14 detected, but FW not in FSD_14_FW set")
           self.fsd14_error_logged = True
 
-    # Buttons # ToDo: add Gap adjust button
+    # Tesla profile changes are translated to gapAdjustCruise releases by CarStateExt.
 
     # Messages needed by carcontroller
     self.das_control = copy.copy(cp_ap_party.vl["DAS_control"])

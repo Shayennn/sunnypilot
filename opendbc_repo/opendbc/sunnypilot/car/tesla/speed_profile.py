@@ -4,8 +4,8 @@ Copyright (c) 2021-, Haibin Wen, sunnypilot, and a number of other contributors.
 This file is part of sunnypilot and is licensed under the MIT License.
 See the LICENSE.md file in the root directory for more details.
 """
-from enum import IntEnum
 import math
+from enum import IntEnum
 
 from opendbc.car import structs
 from opendbc.car.tesla.values import TeslaFlags
@@ -17,7 +17,7 @@ DRIVER_ASSIST_CONTROL = "UI_driverAssistControl"
 GTW_CAR_CONFIG_BYTES = tuple(f"GTW_carConfigByte{i}" for i in range(8))
 DRIVER_ASSIST_CONTROL_BYTES = tuple(f"UI_driverAssistControlByte{i}" for i in range(8))
 
-PERSONALITY_CONFIRMATION_SAMPLES = 2
+SELECTOR_CONFIRMATION_SAMPLES = 2
 
 
 class SpeedProfileProtocol(IntEnum):
@@ -26,41 +26,9 @@ class SpeedProfileProtocol(IntEnum):
   hw4_fsd14 = 2
 
 
-class TeslaSpeedProfile(IntEnum):
-  chill = 0
-  normal = 1
-  hurry = 2
-  mad_max = 3
-  sloth = 4
-
-
-class SunnypilotPersonality(IntEnum):
-  aggressive = 0
-  standard = 1
-  relaxed = 2
-
-
-FOLLOW_DISTANCE_PROFILES = {
-  SpeedProfileProtocol.hw3: {
-    1: TeslaSpeedProfile.hurry,
-    2: TeslaSpeedProfile.normal,
-    3: TeslaSpeedProfile.chill,
-  },
-  SpeedProfileProtocol.hw4_fsd14: {
-    1: TeslaSpeedProfile.mad_max,
-    2: TeslaSpeedProfile.hurry,
-    3: TeslaSpeedProfile.normal,
-    4: TeslaSpeedProfile.chill,
-    5: TeslaSpeedProfile.sloth,
-  },
-}
-
-PROFILE_PERSONALITIES = {
-  TeslaSpeedProfile.sloth: SunnypilotPersonality.relaxed,
-  TeslaSpeedProfile.chill: SunnypilotPersonality.relaxed,
-  TeslaSpeedProfile.normal: SunnypilotPersonality.standard,
-  TeslaSpeedProfile.hurry: SunnypilotPersonality.aggressive,
-  TeslaSpeedProfile.mad_max: SunnypilotPersonality.aggressive,
+VALID_SELECTORS = {
+  SpeedProfileProtocol.hw3: frozenset((1, 2, 3)),
+  SpeedProfileProtocol.hw4_fsd14: frozenset((1, 2, 3, 4, 5)),
 }
 
 
@@ -98,18 +66,6 @@ def select_protocol(das_hw: int | None, fsd_14: bool) -> SpeedProfileProtocol:
   return SpeedProfileProtocol.unknown
 
 
-def profile_for_follow_distance(protocol: SpeedProfileProtocol, follow_distance: int) -> TeslaSpeedProfile | None:
-  return FOLLOW_DISTANCE_PROFILES.get(protocol, {}).get(follow_distance)
-
-
-def personality_for_profile(profile: TeslaSpeedProfile | None) -> SunnypilotPersonality | None:
-  return PROFILE_PERSONALITIES.get(profile)
-
-
-def personality_for_follow_distance(protocol: SpeedProfileProtocol, follow_distance: int) -> SunnypilotPersonality | None:
-  return personality_for_profile(profile_for_follow_distance(protocol, follow_distance))
-
-
 class TeslaSpeedProfileInputState:
   def __init__(self, CP: structs.CarParams):
     self.enabled = bool(CP.openpilotLongitudinalControl)
@@ -117,13 +73,10 @@ class TeslaSpeedProfileInputState:
     self.das_hw: int | None = None
     self.protocol = select_protocol(self.das_hw, self.fsd_14)
 
-    self.follow_distance: int | None = None
-    self.profile: TeslaSpeedProfile | None = None
-    self.personality_request = SunnypilotPersonality.standard
-    self.personality_request_valid = False
-
-    self._candidate_follow_distance: int | None = None
+    self.selector: int | None = None
+    self._candidate_selector: int | None = None
     self._candidate_samples = 0
+    self._pending_gap_adjust_events = 0
 
   @staticmethod
   def parser_messages(enabled: bool) -> list[tuple[str, float]]:
@@ -133,14 +86,10 @@ class TeslaSpeedProfileInputState:
     return [(GTW_CAR_CONFIG, math.nan), (DRIVER_ASSIST_CONTROL, math.nan)]
 
   def _reset_source(self) -> None:
-    self.follow_distance = None
-    self.profile = None
-    # Standard is an inert payload while valid is false; consumers must retain
-    # their current personality until a confirmed Tesla selection is published.
-    self.personality_request = SunnypilotPersonality.standard
-    self.personality_request_valid = False
-    self._candidate_follow_distance = None
+    self.selector = None
+    self._candidate_selector = None
     self._candidate_samples = 0
+    self._pending_gap_adjust_events = 0
 
   def _update_protocol(self, das_hw: int | None) -> bool:
     protocol = select_protocol(das_hw, self.fsd_14)
@@ -151,29 +100,29 @@ class TeslaSpeedProfileInputState:
       self._reset_source()
     return changed
 
-  def _observe_follow_distance(self, follow_distance: int) -> None:
-    profile = profile_for_follow_distance(self.protocol, follow_distance)
-    personality = personality_for_profile(profile)
-    if profile is None or personality is None:
-      # Invalid source values never publish a request and break an in-progress
-      # confirmation. A previously confirmed request remains unchanged.
-      self._candidate_follow_distance = None
+  def _observe_selector(self, selector: int) -> None:
+    if selector not in VALID_SELECTORS.get(self.protocol, ()):
+      # Invalid source values break an in-progress confirmation. The last
+      # confirmed selector remains the baseline and never creates an event.
+      self._candidate_selector = None
       self._candidate_samples = 0
       return
 
-    if follow_distance == self._candidate_follow_distance:
-      self._candidate_samples = min(self._candidate_samples + 1, PERSONALITY_CONFIRMATION_SAMPLES)
+    if selector == self._candidate_selector:
+      self._candidate_samples = min(self._candidate_samples + 1, SELECTOR_CONFIRMATION_SAMPLES)
     else:
-      self._candidate_follow_distance = follow_distance
+      self._candidate_selector = selector
       self._candidate_samples = 1
 
-    if self._candidate_samples >= PERSONALITY_CONFIRMATION_SAMPLES:
-      self.follow_distance = follow_distance
-      self.profile = profile
-      self.personality_request = personality
-      self.personality_request_valid = True
+    if self._candidate_samples >= SELECTOR_CONFIRMATION_SAMPLES and selector != self.selector:
+      # The first confirmed value establishes a baseline. Every later raw
+      # selector change represents one Tesla profile adjustment, including
+      # HW4 transitions within the former personality groups (1<->2, 4<->5).
+      if self.selector is not None:
+        self._pending_gap_adjust_events += 1
+      self.selector = selector
 
-  def update(self, cp_party, ret_sp: structs.CarStateSP) -> None:
+  def update(self, cp_party) -> list[structs.CarState.ButtonEvent]:
     if self.enabled:
       hardware_frames = _raw_can_frames(cp_party.vl_all[GTW_CAR_CONFIG], GTW_CAR_CONFIG_BYTES)
       protocol_changed = False
@@ -186,7 +135,12 @@ class TeslaSpeedProfileInputState:
       if not protocol_changed and self.protocol != SpeedProfileProtocol.unknown:
         follow_frames = _raw_can_frames(cp_party.vl_all[DRIVER_ASSIST_CONTROL], DRIVER_ASSIST_CONTROL_BYTES)
         for dat in follow_frames:
-          self._observe_follow_distance((dat[5] >> 5) & 0x07)
+          self._observe_selector((dat[5] >> 5) & 0x07)
 
-    ret_sp.longitudinalPersonalityRequest = int(self.personality_request)
-    ret_sp.longitudinalPersonalityRequestValid = self.personality_request_valid
+    # CarState consumers treat gapAdjustCruise as an edge. Drain at most one
+    # queued edge per update so multiple confirmed changes in one CAN batch are
+    # not collapsed by consumers that use any(...) over buttonEvents.
+    if self._pending_gap_adjust_events:
+      self._pending_gap_adjust_events -= 1
+      return [structs.CarState.ButtonEvent(pressed=False, type=structs.CarState.ButtonEvent.Type.gapAdjustCruise)]
+    return []

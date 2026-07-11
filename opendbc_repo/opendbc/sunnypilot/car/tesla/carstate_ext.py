@@ -47,7 +47,10 @@ class CarStateExt:
       elif speed_units == "MPH":
         ret_sp.speedLimit = speed_limit * CV.MPH_TO_MS
 
-    self.speed_profile_input.update(cp_party, ret_sp)
+    gap_events = self.speed_profile_input.update(cp_party)
+    if gap_events:
+      # Reassigning pycapnp readers directly can silently reset enum fields.
+      ret.buttonEvents = [event.to_dict() for event in (*ret.buttonEvents, *gap_events)]
 
   @staticmethod
   def get_party_parser_messages(CP: structs.CarParams) -> list[tuple[str, float]]:

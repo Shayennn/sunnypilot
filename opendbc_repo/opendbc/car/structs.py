@@ -170,5 +170,6 @@ class CarControlSP:
 @auto_dataclass
 class CarStateSP:
   speedLimit: float = auto_field()
-  longitudinalPersonalityRequest: int = auto_field()
-  longitudinalPersonalityRequestValid: bool = auto_field()
+  # Deprecated compatibility fields; keep aligned with cereal/custom.capnp.
+  longitudinalPersonalityRequestDEPRECATED: int = auto_field()
+  longitudinalPersonalityRequestValidDEPRECATED: bool = auto_field()
