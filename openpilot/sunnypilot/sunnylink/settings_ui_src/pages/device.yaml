@@ -59,6 +59,20 @@ sections:
       label: 24h
     - value: 1800
       label: 30h (Default)
+  - key: FanControlAmbientTemperatureC
+    widget: option
+    title: Average City Temperature
+    description: Compensates fan control for your city's yearly average outdoor temperature. Hotter climates run the fan
+      earlier and allow more cooling while the device is idle. The San Diego default is 18 °C; this setting always uses Celsius.
+    details: Climate compensation adjusts fan feedforward while preserving the absolute device temperature target and thermal
+      protection limits. In warmer climates, the ignition-off fan ceiling also rises by one percentage point per degree above
+      the 18 °C baseline, up to 50%.
+    min: -10
+    max: 40
+    step: 1
+    unit: °C
+    enablement:
+    - $ref: '#/macros/offroad'
 - id: language
   title: Language
   items:
