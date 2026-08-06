@@ -8,7 +8,7 @@ from opendbc.car.tesla.carstate import CarState, DAS_SETTINGS_COUNTER_POLICY
 from opendbc.car.tesla.interface import CarInterface
 from opendbc.car.tesla.fingerprints import FW_VERSIONS
 from opendbc.car.tesla.radar_interface import RADAR_START_ADDR
-from opendbc.car.tesla.values import CANBUS, CAR, DAS_SETTINGS_COUNTER_FW, DBC, FSD_14_FW, TeslaFlags, TeslaSafetyFlags
+from opendbc.car.tesla.values import CANBUS, CAR, DBC, FSD_14_FW, TeslaFlags, TeslaSafetyFlags
 
 Ecu = CarParams.Ecu
 
@@ -60,8 +60,6 @@ FSD_14_FW_RULE = {
 
 
 class TestTeslaFingerprint(unittest.TestCase):
-  DAS_SETTINGS_FW = DAS_SETTINGS_COUNTER_FW[CAR.TESLA_MODEL_Y][0]
-
   @staticmethod
   def car_fw(ecu, version, address=0x730, sub_address=0, bus=0):
     return CarParams.CarFw(ecu=ecu, fwVersion=version, address=address, subAddress=sub_address, bus=bus)
@@ -100,6 +98,15 @@ class TestTeslaFingerprint(unittest.TestCase):
         )
         assert is_fsd_14 == expected, f"{fw}"
 
+  def test_fsd_14_interface_flags(self):
+    for candidate, versions in FSD_14_FW.items():
+      for version in versions:
+        with self.subTest(candidate=candidate, version=version):
+          CP = CarInterface.get_params(candidate, self.fingerprint(),
+                                       [self.car_fw(Ecu.eps, version)], False, False, False)
+          assert CP.flags & TeslaFlags.FSD_14
+          assert CP.safetyConfigs[0].safetyParam & TeslaSafetyFlags.FSD_14
+
   def test_radar_detection(self):
     # Test radar availability detection for cars with radar DBC defined
     for radar in (True, False):
@@ -118,42 +125,25 @@ class TestTeslaFingerprint(unittest.TestCase):
       CP = CarInterface.get_params(CAR.TESLA_MODEL_X, fingerprint, [], False, False, False)
       assert CP.radarUnavailable  # Always unavailable since no radar DBC
 
-  def test_das_settings_counter_policy_firmware_gate(self):
-    valid_fw = self.car_fw(Ecu.eps, self.DAS_SETTINGS_FW)
+  def test_das_settings_counter_policy_all_tesla(self):
     cases = (
-      ("exact", CAR.TESLA_MODEL_Y, self.fingerprint(), [valid_fw], True),
-      ("wrong car", CAR.TESLA_MODEL_3, self.fingerprint(), [valid_fw], False),
-      ("other FSD 14", CAR.TESLA_MODEL_Y, self.fingerprint(),
-       [self.car_fw(Ecu.eps, b'TeMYG4_Main_0.0.0 (77),Y4003.05.4')], False),
-      ("one byte different", CAR.TESLA_MODEL_Y, self.fingerprint(),
-       [self.car_fw(Ecu.eps, b'TeMYG4_Main_0.0.0 (78),Y4003.06.1')], False),
-      ("no firmware", CAR.TESLA_MODEL_Y, self.fingerprint(), [], False),
-      ("missing message", CAR.TESLA_MODEL_Y, self.fingerprint(None), [valid_fw], False),
-      ("wrong bus", CAR.TESLA_MODEL_Y, self.fingerprint(CANBUS.party), [valid_fw], False),
-      ("wrong DLC", CAR.TESLA_MODEL_Y, self.fingerprint(das_settings_size=7), [valid_fw], False),
-      ("wrong ECU", CAR.TESLA_MODEL_Y, self.fingerprint(), [self.car_fw(Ecu.adas, self.DAS_SETTINGS_FW)], False),
-      ("wrong EPS address", CAR.TESLA_MODEL_Y, self.fingerprint(),
-       [self.car_fw(Ecu.eps, self.DAS_SETTINGS_FW, address=0x731)], False),
-      ("wrong EPS subaddress", CAR.TESLA_MODEL_Y, self.fingerprint(),
-       [self.car_fw(Ecu.eps, self.DAS_SETTINGS_FW, sub_address=1)], False),
-      ("wrong EPS bus", CAR.TESLA_MODEL_Y, self.fingerprint(),
-       [self.car_fw(Ecu.eps, self.DAS_SETTINGS_FW, bus=1)], False),
-      ("conflicting EPS", CAR.TESLA_MODEL_Y, self.fingerprint(),
-       [valid_fw, self.car_fw(Ecu.eps, b'TeMYG4_Main_0.0.0 (78),Y4003.06.1')], False),
+      ("model 3", CAR.TESLA_MODEL_3, self.fingerprint(), []),
+      ("model Y", CAR.TESLA_MODEL_Y, self.fingerprint(), []),
+      ("model X without DAS_settings", CAR.TESLA_MODEL_X, self.fingerprint(None), []),
+      ("unknown firmware", CAR.TESLA_MODEL_Y, self.fingerprint(), [self.car_fw(Ecu.eps, b'unknown')]),
+      ("unexpected DLC", CAR.TESLA_MODEL_3, self.fingerprint(das_settings_size=7), []),
     )
 
-    for name, candidate, fingerprint, car_fw, expected in cases:
+    for name, candidate, fingerprint, car_fw in cases:
       with self.subTest(name=name):
         CP = CarInterface.get_params(candidate, fingerprint, car_fw, False, False, False)
-        assert bool(CP.flags & TeslaFlags.DAS_SETTINGS_COUNTER) == expected
-
-    CP = CarInterface.get_params(CAR.TESLA_MODEL_Y, self.fingerprint(), [valid_fw], False, False, False)
-    assert CP.safetyConfigs[0].safetyParam == TeslaSafetyFlags.FSD_14
+        parsers = CarState.get_can_parsers(CP, structs.CarParamsSP())
+        assert parsers[Bus.party].counter_policies == {}
+        assert parsers[Bus.ap_party].counter_policies == {0x293: DAS_SETTINGS_COUNTER_POLICY}
 
   def test_das_settings_counter_policy_parser_scope(self):
     fingerprint = self.fingerprint()
-    valid_fw = self.car_fw(Ecu.eps, self.DAS_SETTINGS_FW)
-    CP = CarInterface.get_params(CAR.TESLA_MODEL_Y, fingerprint, [valid_fw], False, False, False)
+    CP = CarInterface.get_params(CAR.TESLA_MODEL_Y, fingerprint, [], False, False, False)
     parsers = CarState.get_can_parsers(CP, structs.CarParamsSP())
 
     assert parsers[Bus.party].counter_policies == {}
@@ -164,9 +154,33 @@ class TestTeslaFingerprint(unittest.TestCase):
     parsers[Bus.ap_party].vl["DAS_settings"]
     assert parsers[Bus.ap_party].message_states[0x293].counter_policy == DAS_SETTINGS_COUNTER_POLICY
 
-    CP = CarInterface.get_params(CAR.TESLA_MODEL_Y, fingerprint, [], False, False, False)
-    parsers = CarState.get_can_parsers(CP, structs.CarParamsSP())
-    assert parsers[Bus.ap_party].counter_policies == {}
+  def test_das_settings_counter_policy_ignores_phase_and_mode(self):
+    CP = CarInterface.get_params(CAR.TESLA_MODEL_Y, self.fingerprint(), [], False, False, False)
+    packer = CANPacker(DBC[CAR.TESLA_MODEL_Y][Bus.party])
+
+    for start_counter in (0, 1, 15):
+      for acceleration_mode in (0, 1):
+        for autosteer_enabled in (0, 1):
+          with self.subTest(start_counter=start_counter, acceleration_mode=acceleration_mode,
+                            autosteer_enabled=autosteer_enabled):
+            parser = CarState.get_can_parsers(CP, structs.CarParamsSP())[Bus.ap_party]
+            parser.vl["DAS_settings"]
+            first = packer.make_can_msg("DAS_settings", CANBUS.autopilot_party, {
+              "DAS_settingCounter": start_counter,
+              "DAS_driverAccelerationMode": acceleration_mode,
+              "DAS_autosteerEnabled": autosteer_enabled,
+            })
+            second = packer.make_can_msg("DAS_settings", CANBUS.autopilot_party, {
+              "DAS_settingCounter": (start_counter + 2) & 0xF,
+              "DAS_driverAccelerationMode": acceleration_mode,
+              "DAS_autosteerEnabled": autosteer_enabled,
+            })
+
+            assert parser.update([1_000_000_000, [first]]) == {0x293}
+            assert parser.update([2_250_000_000, [second]]) == {0x293}
+            state = parser.message_states[0x293]
+            assert state.counter_fail == 0
+            assert state.counter_policy_accepted_alternate == 1
 
   def test_das_settings_incident_sequence(self):
     # Exact contiguous five-+2 run and normalized timestamps from incident rlog 3.
@@ -187,8 +201,7 @@ class TestTeslaFingerprint(unittest.TestCase):
       5_000_238_603,
     )
 
-    CP = CarInterface.get_params(CAR.TESLA_MODEL_Y, self.fingerprint(),
-                                 [self.car_fw(Ecu.eps, self.DAS_SETTINGS_FW)], False, False, False)
+    CP = CarInterface.get_params(CAR.TESLA_MODEL_Y, self.fingerprint(), [], False, False, False)
     parser = CarState.get_can_parsers(CP, structs.CarParamsSP())[Bus.ap_party]
     parser.vl["DAS_settings"]
 
@@ -218,8 +231,7 @@ class TestTeslaFingerprint(unittest.TestCase):
     assert not strict_parser.can_valid
 
   def test_das_settings_counter_rejection_preserves_autosteer_interlock(self):
-    CP = CarInterface.get_params(CAR.TESLA_MODEL_Y, self.fingerprint(),
-                                 [self.car_fw(Ecu.eps, self.DAS_SETTINGS_FW)], False, False, False)
+    CP = CarInterface.get_params(CAR.TESLA_MODEL_Y, self.fingerprint(), [], False, False, False)
     CP_SP = structs.CarParamsSP()
     car_state = CarState(CP, CP_SP)
     parsers = car_state.get_can_parsers(CP, CP_SP)
@@ -240,9 +252,9 @@ class TestTeslaFingerprint(unittest.TestCase):
     state, _ = car_state.update(parsers)
     assert not state.invalidLkasSetting
 
-    # +2 at 0.5 seconds is not an accepted policy transition, but its checksum-valid
+    # +2 beyond 1.25 seconds is not an accepted policy transition, but its checksum-valid
     # signals retain legacy grace behavior so stock Autosteer fails safe.
-    assert parser.update([1_500_000_000, [rejected_enabled]]) == {0x293}
+    assert parser.update([2_250_000_001, [rejected_enabled]]) == {0x293}
     assert parser.vl["DAS_settings"]["DAS_autosteerEnabled"] == 1
     assert parser.message_states[0x293].counter == 2
     assert parser.message_states[0x293].counter_fail == 1
