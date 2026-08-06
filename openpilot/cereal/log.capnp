@@ -2202,7 +2202,6 @@ struct DriverMonitoringState {
     pose @5 :Pose;
     wheeltouchFallbackPercent @6 :Int8;
     uncertainOffroadAlertPercent @7 :Int8;
-    usesRhdHead @8 :Bool;
 
     struct DistractedTypes {
       pose @0: Bool;

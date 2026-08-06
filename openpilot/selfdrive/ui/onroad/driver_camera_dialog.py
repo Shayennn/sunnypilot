@@ -48,9 +48,9 @@ class DriverCameraDialog(CameraView):
     return -1
 
   def _draw_face_detection(self, rect: rl.Rectangle) -> None:
-    # The camera overlay must use the same raw head as the monitoring policy
-    # and the driver-state renderer, including the RHD-head/invert-LHD mode.
-    driver_data = self.driver_state_renderer.get_driver_data()
+    driver_state = ui_state.sm["driverStateV2"]
+    is_rhd = driver_state.wheelOnRightProb > 0.5
+    driver_data = driver_state.rightDriverData if is_rhd else driver_state.leftDriverData
     face_detect = driver_data.faceProb > 0.7
     if not face_detect:
       return

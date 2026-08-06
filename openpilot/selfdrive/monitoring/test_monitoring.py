@@ -4,7 +4,6 @@ import pytest
 
 from openpilot.cereal import log
 from opendbc.car.structs import car
-from openpilot.common.params import Params
 from openpilot.common.realtime import DT_DMON
 from openpilot.selfdrive.monitoring.policy import DriverMonitoring, DRIVER_MONITOR_SETTINGS
 
@@ -42,7 +41,6 @@ msg_DISTRACTED_UNCERTAIN = make_msg(True, distracted=True, model_uncertain=True)
 msg_DISTRACTED_BUT_SOMEHOW_UNCERTAIN = make_msg(True, distracted=True, model_uncertain=dm_settings._HI_STD_THRESHOLD*1.5)
 
 
-DRIVER_MONITORING_YAW_MODE_PARAM = "DriverMonitoringYawMode"
 LEFT_MODEL_YAW = 0.2
 RIGHT_MODEL_YAW = 0.6
 LEFT_PHONE_PROB = 0.11
@@ -51,7 +49,7 @@ TEST_STEERING_ANGLE_DEG = 40.
 LHD_STEER_YAW_OFFSET = -radians(TEST_STEERING_ANGLE_DEG - dm_settings._POSE_YAW_MIN_STEER_DEG) * dm_settings._POSE_YAW_STEER_FACTOR
 RHD_STEER_YAW_OFFSET = -LHD_STEER_YAW_OFFSET
 
-def make_yaw_mode_msg():
+def make_driver_side_msg():
   ds = log.DriverStateV2.new_message()
   for driver_data, yaw, phone_prob in ((ds.leftDriverData, LEFT_MODEL_YAW, LEFT_PHONE_PROB),
                                        (ds.rightDriverData, RIGHT_MODEL_YAW, RIGHT_PHONE_PROB)):
@@ -64,20 +62,6 @@ def make_yaw_mode_msg():
     driver_data.rightEyeProb = 1.
     driver_data.phoneProb = phone_prob
   return ds
-
-
-@pytest.fixture
-def driver_monitoring_yaw_mode():
-  params = Params()
-  previous_value = params.get(DRIVER_MONITORING_YAW_MODE_PARAM)
-  params.remove(DRIVER_MONITORING_YAW_MODE_PARAM)
-  try:
-    yield params
-  finally:
-    if previous_value is None:
-      params.remove(DRIVER_MONITORING_YAW_MODE_PARAM)
-    else:
-      params.put(DRIVER_MONITORING_YAW_MODE_PARAM, previous_value, block=True)
 
 # driver interaction with car
 car_interaction_DETECTED = True
@@ -275,75 +259,15 @@ class TestMonitoring:
   (False, -LEFT_MODEL_YAW, LEFT_PHONE_PROB),
   (True, RIGHT_MODEL_YAW, RIGHT_PHONE_PROB),
 ])
-def test_standard_yaw_mode_uses_detected_wheel_side(driver_monitoring_yaw_mode, wheel_on_right, expected_yaw, expected_phone_prob):
-  driver_monitoring_yaw_mode.put(DRIVER_MONITORING_YAW_MODE_PARAM, "standard", block=True)
+def test_driver_data_uses_detected_wheel_side(wheel_on_right, expected_yaw, expected_phone_prob):
   dm = DriverMonitoring(rhd_saved=wheel_on_right)
 
-  dm._update_states(make_yaw_mode_msg(), [0., 0., 0.], 0., False, False, steering_angle_deg=TEST_STEERING_ANGLE_DEG)
+  dm._update_states(make_driver_side_msg(), [0., 0., 0.], 0., False, False, steering_angle_deg=TEST_STEERING_ANGLE_DEG)
 
   assert dm.wheel_on_right == wheel_on_right
   assert dm.phone_prob == pytest.approx(expected_phone_prob)
   assert dm.pose.yaw == pytest.approx(expected_yaw)
   assert dm.pose.steer_yaw_offset == pytest.approx(RHD_STEER_YAW_OFFSET if wheel_on_right else LHD_STEER_YAW_OFFSET)
-
-
-@pytest.mark.parametrize("wheel_on_right", [False, True])
-def test_rhd_head_invert_lhd_mode_uses_right_head_and_normalizes_yaw(driver_monitoring_yaw_mode, wheel_on_right):
-  driver_monitoring_yaw_mode.put(DRIVER_MONITORING_YAW_MODE_PARAM, "rhd_head_invert_lhd", block=True)
-  dm = DriverMonitoring(rhd_saved=wheel_on_right)
-
-  dm._update_states(make_yaw_mode_msg(), [0., 0., 0.], 0., False, False, steering_angle_deg=TEST_STEERING_ANGLE_DEG)
-
-  assert dm.wheel_on_right == wheel_on_right
-  assert dm.phone_prob == pytest.approx(RIGHT_PHONE_PROB)
-  assert dm.pose.yaw == pytest.approx(RIGHT_MODEL_YAW)
-  # Special mode mirrors only head yaw; steering compensation stays wheel-side based.
-  assert dm.pose.steer_yaw_offset == pytest.approx(RHD_STEER_YAW_OFFSET if wheel_on_right else LHD_STEER_YAW_OFFSET)
-
-
-@pytest.mark.parametrize(("wheel_on_right", "yaw_mode", "expected_uses_rhd_head"), [
-  (False, "standard", False),
-  (True, "standard", True),
-  (False, "rhd_head_invert_lhd", True),
-  (True, "rhd_head_invert_lhd", True),
-])
-def test_state_packet_publishes_effective_driver_head(
-    driver_monitoring_yaw_mode, wheel_on_right, yaw_mode, expected_uses_rhd_head):
-  driver_monitoring_yaw_mode.put(DRIVER_MONITORING_YAW_MODE_PARAM, yaw_mode, block=True)
-  dm = DriverMonitoring(rhd_saved=wheel_on_right)
-
-  dm._update_states(make_yaw_mode_msg(), [0., 0., 0.], 0., False, False)
-
-  assert dm.get_state_packet().driverMonitoringState.visionPolicyState.usesRhdHead is expected_uses_rhd_head
-
-
-def test_state_packet_uses_cached_yaw_mode_not_changed_param(driver_monitoring_yaw_mode):
-  driver_monitoring_yaw_mode.put(DRIVER_MONITORING_YAW_MODE_PARAM, "standard", block=True)
-  cached_mode_dm = DriverMonitoring(rhd_saved=False)
-
-  # Changing the desired offroad preference must not change a running policy.
-  driver_monitoring_yaw_mode.put(DRIVER_MONITORING_YAW_MODE_PARAM, "rhd_head_invert_lhd", block=True)
-  cached_mode_dm._update_states(make_yaw_mode_msg(), [0., 0., 0.], 0., False, False)
-  assert cached_mode_dm.get_state_packet().driverMonitoringState.visionPolicyState.usesRhdHead is False
-
-  # A fresh policy reads the new preference and publishes its new effective head.
-  new_mode_dm = DriverMonitoring(rhd_saved=False)
-  new_mode_dm._update_states(make_yaw_mode_msg(), [0., 0., 0.], 0., False, False)
-  assert new_mode_dm.get_state_packet().driverMonitoringState.visionPolicyState.usesRhdHead is True
-
-
-@pytest.mark.parametrize("mode", [None, "not-a-yaw-mode"])
-def test_missing_or_unrecognized_yaw_mode_falls_back_to_standard(
-    driver_monitoring_yaw_mode, mode):
-  if mode is not None:
-    driver_monitoring_yaw_mode.put(DRIVER_MONITORING_YAW_MODE_PARAM, mode, block=True)
-  dm = DriverMonitoring(rhd_saved=False)
-
-  dm._update_states(make_yaw_mode_msg(), [0., 0., 0.], 0., False, False)
-
-  assert dm.phone_prob == pytest.approx(LEFT_PHONE_PROB)
-  assert dm.pose.yaw == pytest.approx(-LEFT_MODEL_YAW)
-
 
 def _build_sm(selfdrive_enabled, lat_active, steering_pressed, gas_pressed):
   cs = car.CarState.new_message()
