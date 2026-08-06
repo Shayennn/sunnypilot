@@ -13,6 +13,7 @@ class TestCanParserPacker(unittest.TestCase):
   COUNTER_MSG = "STEERING_CONTROL"
   COUNTER_ADDR = 0xE4
   COUNTER_PERIOD_NANOS = 500_000_000
+  COUNTER_MAX_ELAPSED_NANOS = 1_250_000_000
 
   @classmethod
   def counter_policy(cls):
@@ -24,10 +25,23 @@ class TestCanParserPacker(unittest.TestCase):
     )
 
   @classmethod
+  def max_elapsed_counter_policy(cls):
+    return CounterPolicy(
+      name="test_max_elapsed_counter_policy",
+      allowed_deltas=frozenset({1, 2}),
+      max_elapsed_nanos=cls.COUNTER_MAX_ELAPSED_NANOS,
+    )
+
+  @classmethod
   def counter_parser(cls, policy=True, messages=None):
     counter_policies = {cls.COUNTER_MSG: cls.counter_policy()} if policy else None
     return CANParser(cls.COUNTER_DBC, messages if messages is not None else [(cls.COUNTER_MSG, 0)], 0,
                      counter_policies=counter_policies)
+
+  @classmethod
+  def max_elapsed_counter_parser(cls, messages=None):
+    return CANParser(cls.COUNTER_DBC, messages if messages is not None else [(cls.COUNTER_MSG, 0)], 0,
+                     counter_policies={cls.COUNTER_MSG: cls.max_elapsed_counter_policy()})
 
   @classmethod
   def counter_msg(cls, counter, steer_torque=0, bad_checksum=False):
@@ -175,6 +189,11 @@ class TestCanParserPacker(unittest.TestCase):
       {"name": "test", "expected_period_nanos": 0},
       {"name": "test", "tolerance_nanos": -1},
       {"name": "test", "tolerance_nanos": 1},
+      {"name": "test", "allowed_deltas": frozenset({1}), "max_elapsed_nanos": 1_250_000_000},
+      {"name": "test", "allowed_deltas": frozenset({1, 2}), "expected_period_nanos": 500_000_000,
+       "max_elapsed_nanos": 1_250_000_000},
+      {"name": "test", "allowed_deltas": frozenset({1, 2}), "max_elapsed_nanos": 0},
+      {"name": "test", "allowed_deltas": frozenset({1, 2}), "max_elapsed_nanos": True},
     )
     for kwargs in invalid_policies:
       with self.subTest(kwargs=kwargs), self.assertRaises(ValueError):
@@ -272,6 +291,44 @@ class TestCanParserPacker(unittest.TestCase):
     assert state.counter_fail == 0
     assert state.counter_policy_accepted_alternate == 1
     assert parser.vl[self.COUNTER_MSG]["STEER_TORQUE"] == 400
+
+  def test_counter_policy_max_elapsed_accepts_both_phases_and_boundary(self):
+    cases = (
+      (0, 2, 500_000_000),
+      (1, 3, self.COUNTER_MAX_ELAPSED_NANOS),
+      (3, 1, 1),
+    )
+
+    for start_counter, next_counter, elapsed_nanos in cases:
+      with self.subTest(start_counter=start_counter, elapsed_nanos=elapsed_nanos):
+        parser = self.max_elapsed_counter_parser()
+        assert parser.update([1_000_000_000, [self.counter_msg(start_counter)]]) == {self.COUNTER_ADDR}
+        assert parser.update([1_000_000_000 + elapsed_nanos,
+                              [self.counter_msg(next_counter)]]) == {self.COUNTER_ADDR}
+        state = parser.message_states[self.COUNTER_ADDR]
+        assert state.counter_fail == 0
+        assert state.counter_policy_accepted_alternate == 1
+
+    # Normal +1 transitions retain legacy behavior outside the alternate-delta time ceiling.
+    parser = self.max_elapsed_counter_parser()
+    assert parser.update([1_000_000_000, [self.counter_msg(0)]]) == {self.COUNTER_ADDR}
+    assert parser.update([2_250_000_001, [self.counter_msg(1)]]) == {self.COUNTER_ADDR}
+    assert parser.message_states[self.COUNTER_ADDR].counter_fail == 0
+
+  def test_counter_policy_max_elapsed_rejects_non_monotonic_or_late(self):
+    cases = (
+      (0, "non_monotonic_time"),
+      (self.COUNTER_MAX_ELAPSED_NANOS + 1, "timing"),
+    )
+
+    for elapsed_nanos, reason in cases:
+      with self.subTest(elapsed_nanos=elapsed_nanos):
+        parser = self.max_elapsed_counter_parser()
+        assert parser.update([1_000_000_000, [self.counter_msg(0)]]) == {self.COUNTER_ADDR}
+        assert parser.update([1_000_000_000 + elapsed_nanos, [self.counter_msg(2)]]) == {self.COUNTER_ADDR}
+        state = parser.message_states[self.COUNTER_ADDR]
+        assert state.counter_fail == 1
+        assert state.counter_policy_last_reject_reason == reason
 
   def test_counter_policy_rejects_wrong_message_size(self):
     policy = self.counter_policy()
