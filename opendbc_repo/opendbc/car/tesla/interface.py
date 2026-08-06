@@ -2,7 +2,7 @@ from opendbc.car import Bus, get_safety_config, structs
 from opendbc.car.interfaces import CarInterfaceBase
 from opendbc.car.tesla.carcontroller import CarController
 from opendbc.car.tesla.carstate import CarState
-from opendbc.car.tesla.values import TeslaSafetyFlags, TeslaFlags, CANBUS, CAR, DBC, FSD_14_FW, Ecu
+from opendbc.car.tesla.values import DAS_SETTINGS_COUNTER_FW, TeslaSafetyFlags, TeslaFlags, CANBUS, CAR, DBC, FSD_14_FW, Ecu
 from opendbc.car.tesla.radar_interface import RadarInterface, RADAR_START_ADDR
 
 from opendbc.sunnypilot.car.tesla.values import TeslaFlagsSP, TeslaSafetyFlagsSP
@@ -45,6 +45,11 @@ class CarInterface(CarInterfaceBase):
     if fsd_14:
       ret.flags |= TeslaFlags.FSD_14.value
       ret.safetyConfigs[0].safetyParam |= TeslaSafetyFlags.FSD_14.value
+
+    eps_fw = {(fw.bus, fw.address, fw.subAddress, fw.fwVersion) for fw in car_fw if fw.ecu == Ecu.eps}
+    das_settings_counter_fw = {(0, 0x730, 0, version) for version in DAS_SETTINGS_COUNTER_FW.get(candidate, [])}
+    if fingerprint[CANBUS.autopilot_party].get(0x293) == 8 and len(eps_fw) == 1 and eps_fw <= das_settings_counter_fw:
+      ret.flags |= TeslaFlags.DAS_SETTINGS_COUNTER.value
 
     ret.dashcamOnly = candidate in (CAR.TESLA_MODEL_X,)  # dashcam only, pending find invalidLkasSetting signal
 
