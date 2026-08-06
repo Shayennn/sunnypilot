@@ -6,11 +6,12 @@ from openpilot.common.basedir import BASEDIR
 from openpilot.common.params import Params
 from openpilot.common.time_helpers import system_time_valid
 from openpilot.system.ui.widgets.scroller import NavRawScrollPanel, NavScroller
-from openpilot.selfdrive.ui.mici.widgets.button import BigButton, BigCircleButton
+from openpilot.selfdrive.ui.mici.widgets.button import BigButton, BigCircleButton, BigMultiToggle
 from openpilot.selfdrive.ui.mici.widgets.dialog import BigDialog, BigConfirmationDialog
 from openpilot.selfdrive.ui.mici.widgets.pairing_dialog import PairingDialog
 from openpilot.selfdrive.ui.mici.onroad.driver_camera_dialog import DriverCameraDialog
 from openpilot.selfdrive.ui.mici.layouts.onboarding import TrainingGuide, TermsPage
+from openpilot.selfdrive.ui.layouts.settings.common import restart_needed_callback
 from openpilot.system.ui.lib.application import gui_app, FontWeight, MousePos
 from openpilot.system.ui.lib.multilang import tr
 from openpilot.system.ui.widgets import Widget
@@ -156,6 +157,27 @@ class PairBigButton(BigButton):
     gui_app.push_widget(dlg)
 
 
+class DriverMonitoringYawModeButton(BigMultiToggle):
+  OPTIONS = {
+    "standard": "Standard",
+    "rhd_head_invert_lhd": "RHD / Invert LHD",
+  }
+
+  def __init__(self):
+    self._params = ui_state.params
+    super().__init__("driver monitoring yaw mode", list(self.OPTIONS.values()), select_callback=self._select_mode)
+    self.refresh()
+
+  def refresh(self):
+    mode = self._params.get("DriverMonitoringYawMode")
+    self.set_value(self.OPTIONS.get(mode, self.OPTIONS["standard"]))
+
+  def _select_mode(self, label: str):
+    mode = next(mode for mode, option_label in self.OPTIONS.items() if option_label == label)
+    self._params.put("DriverMonitoringYawMode", mode, block=True)
+    restart_needed_callback()
+
+
 class DeviceLayoutMici(NavScroller):
   def __init__(self):
     super().__init__()
@@ -193,6 +215,9 @@ class DeviceLayoutMici(NavScroller):
     driver_cam_btn.set_click_callback(lambda: gui_app.push_widget(DriverCameraDialog()))
     driver_cam_btn.set_enabled(lambda: ui_state.is_offroad())
 
+    self._driver_monitoring_yaw_mode_btn = DriverMonitoringYawModeButton()
+    self._driver_monitoring_yaw_mode_btn.set_enabled(lambda: ui_state.is_offroad())
+
     review_training_guide_btn = BigButton("review\ntraining guide", "", gui_app.texture("icons_mici/settings/device/info.png", 64, 64))
     review_training_guide_btn.set_click_callback(lambda: gui_app.push_widget(ReviewTrainingGuide(completed_callback=lambda: gui_app.pop_widgets_to(self))))
     review_training_guide_btn.set_enabled(lambda: ui_state.is_offroad())
@@ -205,12 +230,17 @@ class DeviceLayoutMici(NavScroller):
       PairBigButton(),
       review_training_guide_btn,
       driver_cam_btn,
+      self._driver_monitoring_yaw_mode_btn,
       terms_btn,
       regulatory_btn,
       reset_calibration_btn,
       reboot_btn,
       self._power_off_btn,
     ])
+
+  def show_event(self):
+    super().show_event()
+    self._driver_monitoring_yaw_mode_btn.refresh()
 
   def _on_regulatory(self):
     if not self._fcc_dialog:
