@@ -18,6 +18,7 @@ class CounterPolicy:
   allowed_deltas: frozenset[int] = frozenset({1})
   expected_period_nanos: int | None = None
   tolerance_nanos: int = 0
+  max_elapsed_nanos: int | None = None
 
   def __post_init__(self) -> None:
     object.__setattr__(self, "allowed_deltas", frozenset(self.allowed_deltas))
@@ -27,14 +28,20 @@ class CounterPolicy:
                                       for delta in self.allowed_deltas):
       raise ValueError("counter policy deltas must be positive integers")
     alternate_deltas = self.allowed_deltas - {1}
-    if alternate_deltas and self.expected_period_nanos is None:
-      raise ValueError("alternate counter policy deltas require an expected period")
-    if not alternate_deltas and self.expected_period_nanos is not None:
-      raise ValueError("counter policy period requires an alternate delta")
+    if alternate_deltas and self.expected_period_nanos is None and self.max_elapsed_nanos is None:
+      raise ValueError("alternate counter policy deltas require a timing bound")
+    if not alternate_deltas and (self.expected_period_nanos is not None or self.max_elapsed_nanos is not None):
+      raise ValueError("counter policy timing bound requires an alternate delta")
+    if self.expected_period_nanos is not None and self.max_elapsed_nanos is not None:
+      raise ValueError("counter policy exact period and maximum elapsed time are mutually exclusive")
     if self.expected_period_nanos is not None and (
       not isinstance(self.expected_period_nanos, int) or isinstance(self.expected_period_nanos, bool) or self.expected_period_nanos <= 0
     ):
       raise ValueError("counter policy period must be positive")
+    if self.max_elapsed_nanos is not None and (
+      not isinstance(self.max_elapsed_nanos, int) or isinstance(self.max_elapsed_nanos, bool) or self.max_elapsed_nanos <= 0
+    ):
+      raise ValueError("counter policy maximum elapsed time must be positive")
     if not isinstance(self.tolerance_nanos, int) or isinstance(self.tolerance_nanos, bool) or self.tolerance_nanos < 0:
       raise ValueError("counter policy tolerance must not be negative")
     if self.expected_period_nanos is None and self.tolerance_nanos != 0:
@@ -216,12 +223,16 @@ class MessageState:
     if delta not in self.counter_policy.allowed_deltas:
       reject_reason = "delta"
     elif delta != 1:
-      assert self.counter_policy.expected_period_nanos is not None
-      expected_nanos = delta * self.counter_policy.expected_period_nanos
       if elapsed_nanos <= 0:
         reject_reason = "non_monotonic_time"
-      elif abs(elapsed_nanos - expected_nanos) > self.counter_policy.tolerance_nanos:
-        reject_reason = "timing"
+      elif self.counter_policy.max_elapsed_nanos is not None:
+        if elapsed_nanos > self.counter_policy.max_elapsed_nanos:
+          reject_reason = "timing"
+      else:
+        assert self.counter_policy.expected_period_nanos is not None
+        expected_nanos = delta * self.counter_policy.expected_period_nanos
+        if abs(elapsed_nanos - expected_nanos) > self.counter_policy.tolerance_nanos:
+          reject_reason = "timing"
 
     if reject_reason is not None:
       details = (f"previous_counter={self.counter} counter={cur_count} delta={delta} " +

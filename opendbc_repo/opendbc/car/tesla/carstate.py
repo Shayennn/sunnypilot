@@ -14,10 +14,9 @@ ButtonType = structs.CarState.ButtonEvent.Type
 DAS_SETTINGS_COUNTER_POLICY = CounterPolicy(
   name="tesla_das_settings_counter",
   # Preserve normal +1 semantics at any arrival time. A +2 is accepted only
-  # when it accounts for exactly two observed nominal periods.
+  # when the checksum-valid transition arrives within the bounded time window.
   allowed_deltas=frozenset({1, 2}),
-  expected_period_nanos=500_000_000,
-  tolerance_nanos=25_000_000,
+  max_elapsed_nanos=1_250_000_000,
 )
 
 
@@ -156,13 +155,9 @@ class CarState(CarStateBase, CarStateExt):
 
   @staticmethod
   def get_can_parsers(CP, CP_SP):
-    ap_counter_policies = None
-    if CP.flags & TeslaFlags.DAS_SETTINGS_COUNTER:
-      ap_counter_policies = {"DAS_settings": DAS_SETTINGS_COUNTER_POLICY}
-
     return {
       Bus.party: CANParser(DBC[CP.carFingerprint][Bus.party], [], CANBUS.party),
       Bus.ap_party: CANParser(DBC[CP.carFingerprint][Bus.party], [], CANBUS.autopilot_party,
-                              counter_policies=ap_counter_policies),
+                              counter_policies={"DAS_settings": DAS_SETTINGS_COUNTER_POLICY}),
       **CarStateExt.get_parser(CP, CP_SP),
     }
