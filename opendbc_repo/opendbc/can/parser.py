@@ -1,5 +1,6 @@
 import math
 import numbers
+from collections.abc import Mapping
 from collections import defaultdict, deque
 from dataclasses import dataclass, field
 
@@ -9,6 +10,35 @@ from opendbc.can.dbc import DBC, Signal
 
 MAX_BAD_COUNTER = 5
 CAN_INVALID_CNT = 5
+
+
+@dataclass(frozen=True)
+class CounterPolicy:
+  name: str
+  allowed_deltas: frozenset[int] = frozenset({1})
+  expected_period_nanos: int | None = None
+  tolerance_nanos: int = 0
+
+  def __post_init__(self) -> None:
+    object.__setattr__(self, "allowed_deltas", frozenset(self.allowed_deltas))
+    if not isinstance(self.name, str) or not self.name:
+      raise ValueError("counter policy name must not be empty")
+    if not self.allowed_deltas or any(not isinstance(delta, int) or isinstance(delta, bool) or delta <= 0
+                                      for delta in self.allowed_deltas):
+      raise ValueError("counter policy deltas must be positive integers")
+    alternate_deltas = self.allowed_deltas - {1}
+    if alternate_deltas and self.expected_period_nanos is None:
+      raise ValueError("alternate counter policy deltas require an expected period")
+    if not alternate_deltas and self.expected_period_nanos is not None:
+      raise ValueError("counter policy period requires an alternate delta")
+    if self.expected_period_nanos is not None and (
+      not isinstance(self.expected_period_nanos, int) or isinstance(self.expected_period_nanos, bool) or self.expected_period_nanos <= 0
+    ):
+      raise ValueError("counter policy period must be positive")
+    if not isinstance(self.tolerance_nanos, int) or isinstance(self.tolerance_nanos, bool) or self.tolerance_nanos < 0:
+      raise ValueError("counter policy tolerance must not be negative")
+    if self.expected_period_nanos is None and self.tolerance_nanos != 0:
+      raise ValueError("counter policy tolerance requires an expected period")
 
 
 def get_raw_value(dat: bytes | bytearray, sig: Signal) -> int:
@@ -44,16 +74,67 @@ class MessageState:
   counter_fail: int = 0
   first_seen_nanos: int = 0
   last_warning_log_nanos: int = 0
+  counter_policy: CounterPolicy | None = None
+  counter_initialized: bool = False
+  counter_nanos: int = 0
+  counter_policy_accepted_alternate: int = 0
+  counter_policy_rejected: int = 0
+  counter_policy_last_delta: int | None = None
+  counter_policy_last_elapsed_nanos: int | None = None
+  counter_policy_last_reject_reason: str | None = None
+  counter_policy_last_accept_log_nanos: int | None = None
+  counter_policy_last_reject_log_nanos: int | None = None
+  counter_policy_last_invalid_log_nanos: int | None = None
+  counter_policy_invalid_logged: bool = False
+  counter_policy_invalid_latched: bool = False
 
   def rate_limited_log(self, last_update_nanos: int, msg: str) -> None:
     if (last_update_nanos - self.last_warning_log_nanos) >= 1_000_000_000:
       carlog.warning(f"CANParser: {hex(self.address)} {self.name} {msg}")
       self.last_warning_log_nanos = last_update_nanos
 
+  def counter_policy_log(self, nanos: int, event: str, msg: str, warning: bool = False) -> None:
+    assert self.counter_policy is not None
+    if event == "reject":
+      attr = "counter_policy_last_reject_log_nanos"
+      interval_nanos = 1_000_000_000
+    elif event == "invalid":
+      attr = "counter_policy_last_invalid_log_nanos"
+      interval_nanos = 60_000_000_000
+    else:
+      attr = "counter_policy_last_accept_log_nanos"
+      interval_nanos = 60_000_000_000
+    last_log_nanos = getattr(self, attr)
+    if last_log_nanos is None or (nanos - last_log_nanos) >= interval_nanos:
+      log = carlog.warning if warning else carlog.info
+      log(f"CANParser: counter_policy_event={event} policy={self.counter_policy.name} " +
+          f"address={hex(self.address)} message={self.name} {msg}")
+      setattr(self, attr, nanos)
+
+  def reject_counter_policy(self, nanos: int, reason: str, details: str) -> bool:
+    assert self.counter_policy is not None
+    self.counter_fail = min(self.counter_fail + 1, MAX_BAD_COUNTER)
+    self.counter_policy_rejected += 1
+    self.counter_policy_last_reject_reason = reason
+    grace = self.counter_fail < MAX_BAD_COUNTER
+    details = f"reason={reason} {details} counter_fail={self.counter_fail} grace={str(grace).lower()}"
+    self.counter_policy_log(nanos, "reject", details, warning=True)
+    if not grace and not self.counter_policy_invalid_logged:
+      self.counter_policy_log(nanos, "invalid", details, warning=True)
+      self.counter_policy_invalid_logged = True
+    return grace
+
   def parse(self, nanos: int, dat: bytes) -> bool:
+    if self.counter_policy is not None and len(dat) != self.size:
+      self.counter_policy_last_delta = None
+      self.counter_policy_last_elapsed_nanos = None
+      self.reject_counter_policy(nanos, "size", f"expected_size={self.size} size={len(dat)}")
+      return False
+
     tmp_vals: list[float] = [0.0] * len(self.signals)
     checksum_failed = False
     counter_failed = False
+    policy_counter: tuple[int, int] | None = None
 
     if self.first_seen_nanos == 0:
       self.first_seen_nanos = nanos
@@ -70,13 +151,23 @@ class MessageState:
           self.rate_limited_log(nanos, f"checksum failed: received {hex(tmp)}, calculated {hex(expected_checksum)}")
 
       if not self.ignore_counter and sig.type == 1:  # COUNTER
-        if not self.update_counter(tmp, sig.size):
-          counter_failed = True
+        if self.counter_policy is None:
+          if not self.update_counter(tmp, sig.size):
+            counter_failed = True
+        else:
+          policy_counter = (tmp, sig.size)
 
       tmp_vals[i] = tmp * sig.factor + sig.offset
 
-    # must have good counter and checksum to update data
-    if checksum_failed or counter_failed:
+    # A policy counter is updated only after the entire frame passes checksum validation.
+    # Legacy messages intentionally keep their original counter/checksum update ordering.
+    if checksum_failed:
+      return False
+    if self.counter_policy is not None and not self.ignore_counter:
+      assert policy_counter is not None
+      if not self.update_counter_policy(nanos, *policy_counter):
+        return False
+    elif counter_failed:
       return False
 
     if not self.vals:
@@ -104,6 +195,59 @@ class MessageState:
     self.counter = cur_count
     return self.counter_fail < MAX_BAD_COUNTER
 
+  def update_counter_policy(self, nanos: int, cur_count: int, cnt_size: int) -> bool:
+    assert self.counter_policy is not None
+
+    if not self.counter_initialized:
+      self.counter = cur_count
+      self.counter_nanos = nanos
+      self.counter_initialized = True
+      carlog.info(f"CANParser: counter_policy_event=seed policy={self.counter_policy.name} " +
+                  f"address={hex(self.address)} message={self.name} counter={cur_count}")
+      return True
+
+    counter_mask = (1 << cnt_size) - 1
+    delta = (cur_count - self.counter) & counter_mask
+    elapsed_nanos = nanos - self.counter_nanos
+    self.counter_policy_last_delta = delta
+    self.counter_policy_last_elapsed_nanos = elapsed_nanos
+
+    reject_reason = None
+    if delta not in self.counter_policy.allowed_deltas:
+      reject_reason = "delta"
+    elif delta != 1:
+      assert self.counter_policy.expected_period_nanos is not None
+      expected_nanos = delta * self.counter_policy.expected_period_nanos
+      if elapsed_nanos <= 0:
+        reject_reason = "non_monotonic_time"
+      elif abs(elapsed_nanos - expected_nanos) > self.counter_policy.tolerance_nanos:
+        reject_reason = "timing"
+
+    if reject_reason is not None:
+      details = (f"previous_counter={self.counter} counter={cur_count} delta={delta} " +
+                 f"elapsed_nanos={elapsed_nanos}")
+      grace = self.reject_counter_policy(nanos, reject_reason, details)
+      # Preserve the established rolling-counter recovery model: a
+      # checksum-valid anomaly becomes the next observed baseline, but still
+      # accumulates a failure and crosses the sticky threshold at five.
+      self.counter = cur_count
+      self.counter_nanos = nanos
+      return grace
+
+    if self.counter_fail > 0:
+      self.counter_fail -= 1
+    self.counter_policy_invalid_logged = False
+    self.counter = cur_count
+    self.counter_nanos = nanos
+    self.counter_policy_last_reject_reason = None
+
+    if delta != 1:
+      self.counter_policy_accepted_alternate += 1
+      self.counter_policy_log(nanos, "accept_alternate",
+                              f"counter={cur_count} delta={delta} elapsed_nanos={elapsed_nanos} " +
+                              f"accepted_alternate={self.counter_policy_accepted_alternate}")
+    return True
+
   def valid(self, current_nanos: int, bus_timeout: bool) -> bool:
     if self.ignore_alive:
       return True
@@ -126,7 +270,8 @@ class VLDict(dict):
 
 
 class CANParser:
-  def __init__(self, dbc_name: str, messages: list[tuple[str | int, int]], bus: int):
+  def __init__(self, dbc_name: str, messages: list[tuple[str | int, int]], bus: int, *,
+               counter_policies: Mapping[str | int, CounterPolicy] | None = None):
     self.dbc_name: str = dbc_name
     self.bus: int = bus
     self.dbc = DBC(dbc_name)
@@ -136,6 +281,31 @@ class CANParser:
     self.ts_nanos: dict[int | str, dict[str, int]] = {}
     self.addresses: set[int] = set()
     self.message_states: dict[int, MessageState] = {}
+    self.counter_policies: dict[int, CounterPolicy] = {}
+
+    if counter_policies is not None and not isinstance(counter_policies, Mapping):
+      raise TypeError("counter_policies must be a mapping")
+
+    for name_or_addr, policy in counter_policies.items() if counter_policies is not None else ():
+      if isinstance(name_or_addr, numbers.Number):
+        msg = self.dbc.addr_to_msg.get(int(name_or_addr))
+      else:
+        msg = self.dbc.name_to_msg.get(name_or_addr)
+      if msg is None:
+        raise RuntimeError(f"could not find counter policy message {name_or_addr!r} in DBC {dbc_name}")
+      if msg.address in self.counter_policies:
+        raise RuntimeError(f"duplicate counter policy for message {msg.name}")
+      if not isinstance(policy, CounterPolicy):
+        raise TypeError(f"counter policy for message {msg.name} must be a CounterPolicy")
+      counter_signals = [sig for sig in msg.sigs.values() if sig.type == 1]
+      if len(counter_signals) != 1:
+        raise RuntimeError(f"counter policy message {msg.name} must have exactly one counter signal")
+      if not any(sig.calc_checksum is not None for sig in msg.sigs.values()):
+        raise RuntimeError(f"counter policy message {msg.name} must have a checksum signal")
+      counter_max = (1 << counter_signals[0].size) - 1
+      if any(delta > counter_max for delta in policy.allowed_deltas):
+        raise RuntimeError(f"counter policy delta exceeds the counter width for message {msg.name}")
+      self.counter_policies[msg.address] = policy
 
     for name_or_addr, freq in messages:
       if isinstance(name_or_addr, numbers.Number):
@@ -177,6 +347,7 @@ class CANParser:
       size=msg.size,
       signals=list(msg.sigs.values()),
       ignore_alive=freq is not None and math.isnan(freq),
+      counter_policy=self.counter_policies.get(msg.address),
     )
     if freq is not None and freq > 0:
       state.frequency = freq
@@ -202,9 +373,10 @@ class CANParser:
     counters_valid = True
     bus_timeout = self.bus_timeout
     for state in self.message_states.values():
-      if state.counter_fail >= MAX_BAD_COUNTER:
+      if state.counter_fail >= MAX_BAD_COUNTER or state.counter_policy_invalid_latched:
         counters_valid = False
-        state.rate_limited_log(self._last_update_nanos, f"counter invalid, {state.counter_fail=} {MAX_BAD_COUNTER=}")
+        state.rate_limited_log(self._last_update_nanos,
+                               f"counter invalid, {state.counter_fail=} latched={state.counter_policy_invalid_latched} {MAX_BAD_COUNTER=}")
       if not state.valid(self._last_update_nanos, bus_timeout):
         valid = False
         state.rate_limited_log(self._last_update_nanos, "not valid (timeout or missing)")
@@ -217,7 +389,8 @@ class CANParser:
     if strings and not isinstance(strings[0], list | tuple):
       strings = [strings]
 
-    for addr in self.addresses:
+    for addr, state in self.message_states.items():
+      state.counter_policy_invalid_latched = False
       for k in self.vl_all[addr]:
         self.vl_all[addr][k].clear()
 
@@ -233,7 +406,10 @@ class CANParser:
         state = self.message_states.get(address)
         if state is None or len(dat) > 64:
           continue
-        if state.parse(t, dat):
+        parsed = state.parse(t, dat)
+        if state.counter_policy is not None and state.counter_fail >= MAX_BAD_COUNTER:
+          state.counter_policy_invalid_latched = True
+        if parsed:
           updated_addrs.add(address)
 
           vl_addr = self.vl[address]
