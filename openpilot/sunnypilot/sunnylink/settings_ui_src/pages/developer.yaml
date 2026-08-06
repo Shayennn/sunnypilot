@@ -52,6 +52,19 @@ sections:
   - key: ShowDebugInfo
     widget: toggle
     title: UI Debug Mode
+  - key: DriverMonitoringYawMode
+    widget: multiple_button
+    title: Driver Monitoring Yaw Mode
+    description: Selects the driver-model head and yaw convention used by driver monitoring. Keep Standard unless validating driver-camera yaw alignment.
+    details: Standard uses the LHD or RHD model head that matches the detected driver side. RHD / Invert LHD always uses the RHD model head and mirrors yaw when the driver is on the left.
+    needs_onroad_cycle: true
+    enablement:
+    - $ref: '#/macros/offroad'
+    options:
+    - value: standard
+      label: Standard
+    - value: rhd_head_invert_lhd
+      label: RHD / Invert LHD
 - id: test_maneuvers
   title: Test Maneuvers
   description: 'DANGER: enabling these maneuvers replaces normal driving behavior with deterministic test sequences. Each
