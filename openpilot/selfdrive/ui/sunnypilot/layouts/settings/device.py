@@ -124,7 +124,6 @@ class DeviceLayoutSP(DeviceLayout):
       self._max_time_offroad,
       LineSeparator(height=10),
       self._quiet_mode_and_dcam,
-      self._driver_monitoring_yaw_mode,
       self._reg_and_training,
       self._onroad_uploads_and_reset_settings,
       Spacer(10),
@@ -133,17 +132,6 @@ class DeviceLayoutSP(DeviceLayout):
     ]
 
     return items
-
-  def _create_driver_monitoring_yaw_mode_item(self):
-    return multiple_button_item_sp(
-      title=lambda: tr("Driver Monitoring Yaw"),
-      description=lambda: tr("Standard uses the selected driver head. The alternate mode uses the RHD head and mirrors LHD yaw."),
-      buttons=[lambda: tr("Standard"), lambda: tr("RHD / Invert LHD")],
-      selected_index=self._driver_monitoring_yaw_mode_index(),
-      button_width=364,
-      callback=self._set_driver_monitoring_yaw_mode,
-      inline=True,
-    )
 
   def _offroad_transition(self):
     self._power_buttons.action_item.right_button.set_visible(ui_state.is_offroad())

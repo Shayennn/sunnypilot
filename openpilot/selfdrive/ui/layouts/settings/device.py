@@ -14,10 +14,9 @@ from openpilot.system.ui.lib.multilang import multilang, tr, tr_noop
 from openpilot.system.ui.widgets import Widget, DialogResult
 from openpilot.system.ui.widgets.confirm_dialog import ConfirmDialog, alert_dialog
 from openpilot.system.ui.widgets.html_render import HtmlModal
-from openpilot.system.ui.widgets.list_view import text_item, button_item, dual_button_item, multiple_button_item
+from openpilot.system.ui.widgets.list_view import text_item, button_item, dual_button_item
 from openpilot.system.ui.widgets.option_dialog import MultiOptionDialog
 from openpilot.system.ui.widgets.scroller_tici import Scroller
-from openpilot.selfdrive.ui.layouts.settings.common import restart_needed_callback
 
 if gui_app.sunnypilot_ui():
   from openpilot.system.ui.sunnypilot.widgets.list_view import button_item_sp as button_item
@@ -57,15 +56,12 @@ class DeviceLayout(Widget):
     self._power_off_btn = dual_button_item(lambda: tr("Reboot"), lambda: tr("Power Off"),
                                            left_callback=self._reboot_prompt, right_callback=self._power_off_prompt)
 
-    self._driver_monitoring_yaw_mode = self._create_driver_monitoring_yaw_mode_item()
-
     items = [
       text_item(lambda: tr("Dongle ID"), self._params.get("DongleId") or (lambda: tr("N/A"))),
       text_item(lambda: tr("Serial"), self._params.get("HardwareSerial") or (lambda: tr("N/A"))),
       self._pair_device_btn,
       button_item(lambda: tr("Driver Camera"), lambda: tr("PREVIEW"), lambda: tr(DESCRIPTIONS['driver_camera']),
                   callback=lambda: gui_app.push_widget(DriverCameraDialog()), enabled=ui_state.is_offroad),
-      self._driver_monitoring_yaw_mode,
       self._reset_calib_btn,
       button_item(lambda: tr("Review Training Guide"), lambda: tr("REVIEW"), lambda: tr(DESCRIPTIONS['review_guide']),
                   self._on_review_training_guide, enabled=ui_state.is_offroad),
@@ -75,35 +71,12 @@ class DeviceLayout(Widget):
     ]
     return items
 
-  def _create_driver_monitoring_yaw_mode_item(self):
-    return multiple_button_item(
-      title=lambda: tr("Driver Monitoring Yaw"),
-      description=lambda: tr("Standard uses the selected driver head. The alternate mode uses the RHD head and mirrors LHD yaw."),
-      buttons=[lambda: tr("Standard"), lambda: tr("RHD / Invert LHD")],
-      selected_index=self._driver_monitoring_yaw_mode_index(),
-      button_width=320,
-      callback=self._set_driver_monitoring_yaw_mode,
-    )
-
-  def _driver_monitoring_yaw_mode_index(self) -> int:
-    return 1 if self._params.get("DriverMonitoringYawMode") == "rhd_head_invert_lhd" else 0
-
-  def _set_driver_monitoring_yaw_mode(self, index: int):
-    yaw_modes = ("standard", "rhd_head_invert_lhd")
-    self._params.put("DriverMonitoringYawMode", yaw_modes[index], block=True)
-    restart_needed_callback()
-
   def _offroad_transition(self):
     self._power_off_btn.action_item.right_button.set_visible(ui_state.is_offroad())
 
   def show_event(self):
     super().show_event()
     self._scroller.show_event()
-
-  def _update_state(self):
-    super()._update_state()
-    self._driver_monitoring_yaw_mode.action_item.set_enabled(ui_state.is_offroad())
-    self._driver_monitoring_yaw_mode.action_item.set_selected_button(self._driver_monitoring_yaw_mode_index())
 
   def _render(self, rect):
     self._scroller.render(rect)

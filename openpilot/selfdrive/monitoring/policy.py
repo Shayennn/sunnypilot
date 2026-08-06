@@ -14,33 +14,8 @@ from openpilot.common.transformations.camera import DEVICE_CAMERAS
 AlertLevel = log.DriverMonitoringState.AlertLevel
 MonitoringPolicy = log.DriverMonitoringState.MonitoringPolicy
 
-DRIVER_MONITORING_YAW_MODE_PARAM = "DriverMonitoringYawMode"
-DRIVER_MONITORING_YAW_MODE_STANDARD = "standard"
-DRIVER_MONITORING_YAW_MODE_RHD_HEAD_INVERT_LHD = "rhd_head_invert_lhd"
-
 def to_percent(v):
   return int(min(max(v * 100., 0.), 100.))
-
-
-def get_driver_monitoring_yaw_mode(params):
-  yaw_mode = params.get(DRIVER_MONITORING_YAW_MODE_PARAM)
-  return yaw_mode if yaw_mode == DRIVER_MONITORING_YAW_MODE_RHD_HEAD_INVERT_LHD else DRIVER_MONITORING_YAW_MODE_STANDARD
-
-
-def select_driver_data(driver_state, wheel_on_right, yaw_mode):
-  use_right_driver_data = wheel_on_right or yaw_mode == DRIVER_MONITORING_YAW_MODE_RHD_HEAD_INVERT_LHD
-  return driver_state.rightDriverData if use_right_driver_data else driver_state.leftDriverData
-
-
-def normalize_driver_yaw(yaw, wheel_on_right, yaw_mode):
-  if wheel_on_right:
-    # Preserve the policy's existing RHD normalization.
-    yaw *= -1
-  elif yaw_mode == DRIVER_MONITORING_YAW_MODE_RHD_HEAD_INVERT_LHD:
-    # This mode uses the RHD head output even for an LHD vehicle.
-    yaw *= -1
-  return yaw
-
 
 # ******************************************************************************************
 #  NOTE: To fork maintainers.
@@ -156,7 +131,6 @@ class DriverMonitoring:
   def __init__(self, rhd_saved=False, settings=None, always_on=False):
     # init policy settings
     self.settings = settings if settings is not None else DRIVER_MONITOR_SETTINGS()
-    self.yaw_mode = get_driver_monitoring_yaw_mode(Params())
 
     # init driver status
     wheelpos_filter_raw_priors = (self.settings._WHEELPOS_DATA_AVG, self.settings._WHEELPOS_DATA_VAR, 2)
@@ -283,17 +257,17 @@ class DriverMonitoring:
     # make sure no switching when engaged
     if op_engaged and self.wheel_on_right_last is not None and self.wheel_on_right_last != self.wheel_on_right and not demo_mode:
       self.wheel_on_right = self.wheel_on_right_last
-    driver_data = select_driver_data(driver_state, self.wheel_on_right, self.yaw_mode)
+    driver_data = driver_state.rightDriverData if self.wheel_on_right else driver_state.leftDriverData
     if not all(len(x) > 0 for x in (driver_data.faceOrientation, driver_data.facePosition,
                                     driver_data.faceOrientationStd, driver_data.facePositionStd)):
       return
 
     self.face_detected = driver_data.faceProb > self.settings._FACE_THRESHOLD
     self.pose.pitch, self.pose.yaw = face_orientation_from_model(driver_data.faceOrientation, driver_data.facePosition, cal_rpy)
-    self.pose.yaw = normalize_driver_yaw(self.pose.yaw, self.wheel_on_right, self.yaw_mode)
     steer_d = max(abs(steering_angle_deg) - self.settings._POSE_YAW_MIN_STEER_DEG, 0.)
     self.pose.steer_yaw_offset = radians(steer_d) * -np.sign(steering_angle_deg) * self.settings._POSE_YAW_STEER_FACTOR
     if self.wheel_on_right:
+      self.pose.yaw *= -1
       self.pose.steer_yaw_offset *= -1
     self.wheel_on_right_last = self.wheel_on_right
     self.model_std_max = max(driver_data.faceOrientationStd[0], driver_data.faceOrientationStd[1])
