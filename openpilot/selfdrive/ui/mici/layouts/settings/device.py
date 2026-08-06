@@ -165,8 +165,11 @@ class DriverMonitoringYawModeButton(BigMultiToggle):
 
   def __init__(self):
     self._params = ui_state.params
-    super().__init__("driver monitoring yaw mode", list(self.OPTIONS.values()), select_callback=self._select_mode)
+    super().__init__("driver yaw\nmode", list(self.OPTIONS.values()), select_callback=self._select_mode)
     self.refresh()
+
+  def _get_label_font_size(self):
+    return 42
 
   def refresh(self):
     mode = self._params.get("DriverMonitoringYawMode")
