@@ -94,6 +94,14 @@ FSD_14_FW = {
   ]
 }
 
+# Narrow scope for the vehicle/firmware observed in comma-incident-2026-08-06.
+# This does not establish whether +2 is sender behavior or one missing +1 frame.
+DAS_SETTINGS_COUNTER_FW = {
+  CAR.TESLA_MODEL_Y: [
+    b'TeMYG4_Main_0.0.0 (78),Y4003.06.0',
+  ],
+}
+
 
 class CANBUS:
   party = 0
@@ -135,6 +143,7 @@ class TeslaFlags(IntFlag):
   LONG_CONTROL = 1
   FSD_14 = 2
   MISSING_DAS_SETTINGS = 4
+  DAS_SETTINGS_COUNTER = 8
 
 
 DBC = CAR.create_dbc_map()
