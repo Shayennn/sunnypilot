@@ -2,7 +2,6 @@ import numpy as np
 import pyray as rl
 from openpilot.cereal import log
 from dataclasses import dataclass
-from openpilot.selfdrive.monitoring.yaw import select_driver_data_for_head, uses_rhd_head_from_state
 from openpilot.selfdrive.ui import UI_BORDER_SIZE
 from openpilot.selfdrive.ui.ui_state import ui_state
 from openpilot.system.ui.lib.application import gui_app
@@ -107,13 +106,6 @@ class DriverStateRenderer(Widget):
     if self.v_arc_data:
       rl.draw_spline_linear(self.v_arc_lines, len(self.v_arc_lines), self.v_arc_data.thickness, self.arc_color)
 
-  def get_driver_data(self):
-    """Return the same raw driver head selected by the monitoring policy."""
-    sm = ui_state.sm
-    dm_state = sm["driverMonitoringState"]
-    self.is_rhd = dm_state.isRHD
-    return select_driver_data_for_head(sm["driverStateV2"], uses_rhd_head_from_state(dm_state))
-
   def _update_state(self):
     """Update the driver monitoring state based on model data"""
     sm = ui_state.sm
@@ -123,13 +115,15 @@ class DriverStateRenderer(Widget):
     # Get monitoring state
     dm_state = sm["driverMonitoringState"]
     self.is_active = dm_state.activePolicy == log.DriverMonitoringState.MonitoringPolicy.vision
+    self.is_rhd = dm_state.isRHD
 
     # Update fade state (smoother transition between active/inactive)
     fade_target = 0.0 if self.is_active else 0.5
     self.dm_fade_state = np.clip(self.dm_fade_state + 0.2 * (fade_target - self.dm_fade_state), 0.0, 1.0)
 
     # Get driver orientation data from appropriate camera
-    driver_data = self.get_driver_data()
+    driverstate = sm["driverStateV2"]
+    driver_data = driverstate.rightDriverData if self.is_rhd else driverstate.leftDriverData
     driver_orient = driver_data.faceOrientation
 
     # Update pose values with scaling and smoothing

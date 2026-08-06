@@ -10,26 +10,12 @@ from openpilot.common.filter_simple import FirstOrderFilter
 from openpilot.common.params import Params
 from openpilot.common.stat_live import RunningStatFilter
 from openpilot.common.transformations.camera import DEVICE_CAMERAS
-from openpilot.selfdrive.monitoring.yaw import (
-  get_driver_monitoring_yaw_mode,
-  normalize_driver_yaw,
-  select_driver_data,
-  uses_rhd_head,
-)
-
-# Compatibility re-exports for out-of-tree monitoring integrations.
-from openpilot.selfdrive.monitoring.yaw import (  # noqa: F401
-  DRIVER_MONITORING_YAW_MODE_PARAM,
-  DRIVER_MONITORING_YAW_MODE_RHD_HEAD_INVERT_LHD,
-  DRIVER_MONITORING_YAW_MODE_STANDARD,
-)
 
 AlertLevel = log.DriverMonitoringState.AlertLevel
 MonitoringPolicy = log.DriverMonitoringState.MonitoringPolicy
 
 def to_percent(v):
   return int(min(max(v * 100., 0.), 100.))
-
 
 # ******************************************************************************************
 #  NOTE: To fork maintainers.
@@ -145,7 +131,6 @@ class DriverMonitoring:
   def __init__(self, rhd_saved=False, settings=None, always_on=False):
     # init policy settings
     self.settings = settings if settings is not None else DRIVER_MONITOR_SETTINGS()
-    self.yaw_mode = get_driver_monitoring_yaw_mode(Params())
 
     # init driver status
     wheelpos_filter_raw_priors = (self.settings._WHEELPOS_DATA_AVG, self.settings._WHEELPOS_DATA_VAR, 2)
@@ -272,17 +257,17 @@ class DriverMonitoring:
     # make sure no switching when engaged
     if op_engaged and self.wheel_on_right_last is not None and self.wheel_on_right_last != self.wheel_on_right and not demo_mode:
       self.wheel_on_right = self.wheel_on_right_last
-    driver_data = select_driver_data(driver_state, self.wheel_on_right, self.yaw_mode)
+    driver_data = driver_state.rightDriverData if self.wheel_on_right else driver_state.leftDriverData
     if not all(len(x) > 0 for x in (driver_data.faceOrientation, driver_data.facePosition,
                                     driver_data.faceOrientationStd, driver_data.facePositionStd)):
       return
 
     self.face_detected = driver_data.faceProb > self.settings._FACE_THRESHOLD
     self.pose.pitch, self.pose.yaw = face_orientation_from_model(driver_data.faceOrientation, driver_data.facePosition, cal_rpy)
-    self.pose.yaw = normalize_driver_yaw(self.pose.yaw, self.wheel_on_right, self.yaw_mode)
     steer_d = max(abs(steering_angle_deg) - self.settings._POSE_YAW_MIN_STEER_DEG, 0.)
     self.pose.steer_yaw_offset = radians(steer_d) * -np.sign(steering_angle_deg) * self.settings._POSE_YAW_STEER_FACTOR
     if self.wheel_on_right:
+      self.pose.yaw *= -1
       self.pose.steer_yaw_offset *= -1
     self.wheel_on_right_last = self.wheel_on_right
     self.model_std_max = max(driver_data.faceOrientationStd[0], driver_data.faceOrientationStd[1])
@@ -422,7 +407,6 @@ class DriverMonitoring:
     dm.visionPolicyState.distractedTypes.eye = self.distracted_types['eye']
     dm.visionPolicyState.distractedTypes.phone = self.distracted_types['phone']
     dm.visionPolicyState.faceDetected = self.face_detected
-    dm.visionPolicyState.usesRhdHead = uses_rhd_head(self.wheel_on_right, self.yaw_mode)
     dm.visionPolicyState.pose.pitch = self.pose.pitch
     dm.visionPolicyState.pose.yaw = self.pose.yaw
     dm.visionPolicyState.pose.calibrated = self.pose.calibrated
