@@ -19174,6 +19174,8 @@ public:
 
   inline  ::int8_t getUncertainOffroadAlertPercent() const;
 
+  inline bool getUsesRhdHead() const;
+
 private:
   ::capnp::_::StructReader _reader;
   template <typename, ::capnp::Kind>
@@ -19233,6 +19235,9 @@ public:
 
   inline  ::int8_t getUncertainOffroadAlertPercent();
   inline void setUncertainOffroadAlertPercent( ::int8_t value);
+
+  inline bool getUsesRhdHead();
+  inline void setUsesRhdHead(bool value);
 
 private:
   ::capnp::_::StructBuilder _builder;
@@ -48135,6 +48140,20 @@ inline  ::int8_t DriverMonitoringState::VisionPolicyState::Builder::getUncertain
 inline void DriverMonitoringState::VisionPolicyState::Builder::setUncertainOffroadAlertPercent( ::int8_t value) {
   _builder.setDataField< ::int8_t>(
       ::capnp::bounded<3>() * ::capnp::ELEMENTS, value);
+}
+
+inline bool DriverMonitoringState::VisionPolicyState::Reader::getUsesRhdHead() const {
+  return _reader.getDataField<bool>(
+      ::capnp::bounded<10>() * ::capnp::ELEMENTS);
+}
+
+inline bool DriverMonitoringState::VisionPolicyState::Builder::getUsesRhdHead() {
+  return _builder.getDataField<bool>(
+      ::capnp::bounded<10>() * ::capnp::ELEMENTS);
+}
+inline void DriverMonitoringState::VisionPolicyState::Builder::setUsesRhdHead(bool value) {
+  _builder.setDataField<bool>(
+      ::capnp::bounded<10>() * ::capnp::ELEMENTS, value);
 }
 
 inline bool DriverMonitoringState::VisionPolicyState::DistractedTypes::Reader::getPose() const {
