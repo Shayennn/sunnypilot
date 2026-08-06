@@ -3,6 +3,11 @@ import numpy as np
 import math
 from openpilot.cereal import log
 from openpilot.common.filter_simple import FirstOrderFilter
+from openpilot.selfdrive.monitoring.yaw import (
+  policy_yaw_to_ui_yaw,
+  select_driver_data_for_head,
+  uses_rhd_head_from_state,
+)
 from openpilot.system.ui.lib.application import gui_app
 from openpilot.system.ui.widgets import Widget
 from openpilot.selfdrive.ui.ui_state import ui_state
@@ -167,14 +172,19 @@ class DriverStateRenderer(Widget):
     dm_state = sm["driverMonitoringState"]
     self._is_active = dm_state.activePolicy == log.DriverMonitoringState.MonitoringPolicy.vision
     self._is_rhd = dm_state.isRHD
+    use_rhd_head = uses_rhd_head_from_state(dm_state)
     self._face_detected = dm_state.visionPolicyState.faceDetected
     self._awareness_unfull = self.effective_active and dm_state.visionPolicyState.awarenessPercent < self.AWARENESS_UNFULL_PERCENT
     self._face_pitch = dm_state.visionPolicyState.pose.pitch + math.radians(6) # calib or DM pose is not accurate, add a fake upward pitch to bias forward
-    self._face_yaw = -dm_state.visionPolicyState.pose.yaw # undo sign flip in face_orientation_from_model to match UI convention
+    # visionPolicyState.pose.yaw includes camera calibration and policy-side
+    # normalization. Standard LHD needs Mici's visual sign flip; RHD-head
+    # paths were already mirrored by policy and must not be flipped again.
+    self._face_yaw = policy_yaw_to_ui_yaw(
+      dm_state.visionPolicyState.pose.yaw, use_rhd_head,
+    )
 
     driverstate = sm["driverStateV2"]
-    driver_data = driverstate.rightDriverData if self._is_rhd else driverstate.leftDriverData
-    return driver_data
+    return select_driver_data_for_head(driverstate, use_rhd_head)
 
   def _update_state(self):
     # Get monitoring state

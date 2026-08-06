@@ -10,36 +10,25 @@ from openpilot.common.filter_simple import FirstOrderFilter
 from openpilot.common.params import Params
 from openpilot.common.stat_live import RunningStatFilter
 from openpilot.common.transformations.camera import DEVICE_CAMERAS
+from openpilot.selfdrive.monitoring.yaw import (
+  get_driver_monitoring_yaw_mode,
+  normalize_driver_yaw,
+  select_driver_data,
+  uses_rhd_head,
+)
+
+# Compatibility re-exports for out-of-tree monitoring integrations.
+from openpilot.selfdrive.monitoring.yaw import (  # noqa: F401
+  DRIVER_MONITORING_YAW_MODE_PARAM,
+  DRIVER_MONITORING_YAW_MODE_RHD_HEAD_INVERT_LHD,
+  DRIVER_MONITORING_YAW_MODE_STANDARD,
+)
 
 AlertLevel = log.DriverMonitoringState.AlertLevel
 MonitoringPolicy = log.DriverMonitoringState.MonitoringPolicy
 
-DRIVER_MONITORING_YAW_MODE_PARAM = "DriverMonitoringYawMode"
-DRIVER_MONITORING_YAW_MODE_STANDARD = "standard"
-DRIVER_MONITORING_YAW_MODE_RHD_HEAD_INVERT_LHD = "rhd_head_invert_lhd"
-
 def to_percent(v):
   return int(min(max(v * 100., 0.), 100.))
-
-
-def get_driver_monitoring_yaw_mode(params):
-  yaw_mode = params.get(DRIVER_MONITORING_YAW_MODE_PARAM)
-  return yaw_mode if yaw_mode == DRIVER_MONITORING_YAW_MODE_RHD_HEAD_INVERT_LHD else DRIVER_MONITORING_YAW_MODE_STANDARD
-
-
-def select_driver_data(driver_state, wheel_on_right, yaw_mode):
-  use_right_driver_data = wheel_on_right or yaw_mode == DRIVER_MONITORING_YAW_MODE_RHD_HEAD_INVERT_LHD
-  return driver_state.rightDriverData if use_right_driver_data else driver_state.leftDriverData
-
-
-def normalize_driver_yaw(yaw, wheel_on_right, yaw_mode):
-  if wheel_on_right:
-    # Preserve the policy's existing RHD normalization.
-    yaw *= -1
-  elif yaw_mode == DRIVER_MONITORING_YAW_MODE_RHD_HEAD_INVERT_LHD:
-    # This mode uses the RHD head output even for an LHD vehicle.
-    yaw *= -1
-  return yaw
 
 
 # ******************************************************************************************
@@ -433,6 +422,7 @@ class DriverMonitoring:
     dm.visionPolicyState.distractedTypes.eye = self.distracted_types['eye']
     dm.visionPolicyState.distractedTypes.phone = self.distracted_types['phone']
     dm.visionPolicyState.faceDetected = self.face_detected
+    dm.visionPolicyState.usesRhdHead = uses_rhd_head(self.wheel_on_right, self.yaw_mode)
     dm.visionPolicyState.pose.pitch = self.pose.pitch
     dm.visionPolicyState.pose.yaw = self.pose.yaw
     dm.visionPolicyState.pose.calibrated = self.pose.calibrated

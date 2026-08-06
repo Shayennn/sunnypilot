@@ -301,6 +301,37 @@ def test_rhd_head_invert_lhd_mode_uses_right_head_and_normalizes_yaw(driver_moni
   assert dm.pose.steer_yaw_offset == pytest.approx(RHD_STEER_YAW_OFFSET if wheel_on_right else LHD_STEER_YAW_OFFSET)
 
 
+@pytest.mark.parametrize(("wheel_on_right", "yaw_mode", "expected_uses_rhd_head"), [
+  (False, "standard", False),
+  (True, "standard", True),
+  (False, "rhd_head_invert_lhd", True),
+  (True, "rhd_head_invert_lhd", True),
+])
+def test_state_packet_publishes_effective_driver_head(
+    driver_monitoring_yaw_mode, wheel_on_right, yaw_mode, expected_uses_rhd_head):
+  driver_monitoring_yaw_mode.put(DRIVER_MONITORING_YAW_MODE_PARAM, yaw_mode, block=True)
+  dm = DriverMonitoring(rhd_saved=wheel_on_right)
+
+  dm._update_states(make_yaw_mode_msg(), [0., 0., 0.], 0., False, False)
+
+  assert dm.get_state_packet().driverMonitoringState.visionPolicyState.usesRhdHead is expected_uses_rhd_head
+
+
+def test_state_packet_uses_cached_yaw_mode_not_changed_param(driver_monitoring_yaw_mode):
+  driver_monitoring_yaw_mode.put(DRIVER_MONITORING_YAW_MODE_PARAM, "standard", block=True)
+  cached_mode_dm = DriverMonitoring(rhd_saved=False)
+
+  # Changing the desired offroad preference must not change a running policy.
+  driver_monitoring_yaw_mode.put(DRIVER_MONITORING_YAW_MODE_PARAM, "rhd_head_invert_lhd", block=True)
+  cached_mode_dm._update_states(make_yaw_mode_msg(), [0., 0., 0.], 0., False, False)
+  assert cached_mode_dm.get_state_packet().driverMonitoringState.visionPolicyState.usesRhdHead is False
+
+  # A fresh policy reads the new preference and publishes its new effective head.
+  new_mode_dm = DriverMonitoring(rhd_saved=False)
+  new_mode_dm._update_states(make_yaw_mode_msg(), [0., 0., 0.], 0., False, False)
+  assert new_mode_dm.get_state_packet().driverMonitoringState.visionPolicyState.usesRhdHead is True
+
+
 @pytest.mark.parametrize("mode", [None, "not-a-yaw-mode"])
 def test_missing_or_unrecognized_yaw_mode_falls_back_to_standard(
     driver_monitoring_yaw_mode, mode):
