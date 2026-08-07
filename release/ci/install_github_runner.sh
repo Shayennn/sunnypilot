@@ -150,24 +150,20 @@ EOL
 }
 
 install_service() {
-    local service_name
-    if [ -f "${RUNNER_DIR}/.service" ]; then
-        service_name=$(cat "${RUNNER_DIR}/.service")
-    else
-        service_name="actions.runner.sunnypilot.$(uname -n)"
-    fi
-  
     create_service_template
     remount_rw
-    local service_path="/etc/systemd/system/${service_name}"
-    echo "Installing systemd service..."
-    if [ -f "${service_path}" ]; then
-        echo "Service ${service_path} found in systemd, we will delete it"
-        sudo rm -f "${service_path}"
-    fi
-    
     cd "$RUNNER_DIR"
-    sudo ./svc.sh install $RUNNER_USER
+
+    if [ -f "${RUNNER_DIR}/.service" ]; then
+        echo "Removing the existing systemd service before reinstalling it..."
+        sudo ./svc.sh uninstall
+    fi
+
+    echo "Installing systemd service..."
+    sudo ./svc.sh install "$RUNNER_USER"
+
+    local service_name
+    service_name=$(cat "${RUNNER_DIR}/.service")
 
     if [ "$START_AT_BOOT" = false ]; then
         sudo systemctl disable "${service_name}"
@@ -177,7 +173,6 @@ install_service() {
 
 check_restore_prerequisites() {
     local can_restore=false
-    local service_name=""
 
     # Check if base runner directory exists
     if [ ! -d "${RUNNER_DIR}" ]; then
@@ -187,13 +182,12 @@ check_restore_prerequisites() {
     fi
 
     # First check if we have the required files for restoration
-    if [ -f "${RUNNER_DIR}/.credentials" ] && [ -f "${RUNNER_DIR}/.service" ]; then
+    if [ -f "${RUNNER_DIR}/.credentials" ] && [ -f "${RUNNER_DIR}/.runner" ]; then
         can_restore=true
-        service_name=$(cat "${RUNNER_DIR}/.service")
         echo "Found required runner configuration files"
     else
         echo "Missing required runner configuration files"
-        echo "Required: .credentials and .service files in ${RUNNER_DIR}"
+        echo "Required: .credentials and .runner files in ${RUNNER_DIR}"
         exit 1
     fi
 
