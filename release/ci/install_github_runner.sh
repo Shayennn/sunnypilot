@@ -5,7 +5,7 @@ set -e
 DEFAULT_REPO_URL="https://github.com/sunnypilot"
 START_AT_BOOT=false
 RESTORE_MODE=false
-RUNNER_VERSION="2.325.0"
+RUNNER_VERSION="2.336.0"
 
 # Parse command line arguments
 while [[ $# -gt 0 ]]; do
@@ -119,7 +119,7 @@ configure_runner() {
     remount_rw
     echo "Configuring runner..."
     cd "$RUNNER_DIR"
-    sudo -u ${RUNNER_USER} ./config.sh --url "$REPO_URL" --token "$GITHUB_TOKEN" --name $(hostname) --runnergroup "tici-tizi" --labels "tici" --work "$BUILDS_DIR" --unattended
+    sudo -u ${RUNNER_USER} ./config.sh --url "$REPO_URL" --token "$GITHUB_TOKEN" --name "$(hostname)" --labels "mici" --work "$BUILDS_DIR" --unattended
     remount_ro
 }
 
