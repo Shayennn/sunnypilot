@@ -7,23 +7,64 @@ See the LICENSE.md file in the root directory for more details.
 from openpilot.selfdrive.ui.mici.layouts.settings import settings as OP
 from openpilot.selfdrive.ui.mici.layouts.settings.settings import SettingsBigButton
 from openpilot.selfdrive.ui.mici.layouts.settings.device import DeviceLayoutMici
-from openpilot.selfdrive.ui.mici.widgets.button import BigCircleButton
+from openpilot.selfdrive.ui.mici.widgets.button import BigButton, BigCircleButton
 from openpilot.selfdrive.ui.mici.widgets.dialog import BigConfirmationDialog, BigDialog
 from openpilot.selfdrive.ui.sunnypilot.mici.layouts.sunnylink import SunnylinkLayoutMici
 from openpilot.selfdrive.ui.sunnypilot.mici.layouts.models import ModelsLayoutMici
 from openpilot.selfdrive.ui.ui_state import ui_state
 from openpilot.system.ui.lib.application import gui_app
 from openpilot.system.ui.lib.multilang import tr
+from openpilot.system.hardware.fan_controller import MAX_AVERAGE_TEMP_C, MIN_AVERAGE_TEMP_C, SAN_DIEGO_AVERAGE_TEMP_C
+from openpilot.system.ui.widgets import DialogResult
+from openpilot.system.ui.widgets.option_dialog import MultiOptionDialog
 
 ICON_SIZE = 70
 BIG_ICON_SIZE = 110
+
+
+class FanClimateButton(BigButton):
+  def __init__(self):
+    self._params = ui_state.params
+    super().__init__(tr("fan climate"), self._temperature_label(self._get_temperature()))
+    self.set_enabled(lambda: ui_state.is_offroad())
+    self.set_click_callback(self._show_temperature_picker)
+
+  def _get_temperature(self) -> int:
+    temperature = int(self._params.get("FanControlAmbientTemperatureC", return_default=True))
+    return max(int(MIN_AVERAGE_TEMP_C), min(int(MAX_AVERAGE_TEMP_C), temperature))
+
+  @staticmethod
+  def _temperature_label(temperature: int) -> str:
+    default = f" · {tr('San Diego default')}" if temperature == SAN_DIEGO_AVERAGE_TEMP_C else ""
+    return f"{temperature} °C{default}"
+
+  def _show_temperature_picker(self):
+    options = [f"{temperature} °C" for temperature in range(int(MIN_AVERAGE_TEMP_C), int(MAX_AVERAGE_TEMP_C) + 1)]
+    current = f"{self._get_temperature()} °C"
+
+    dialog = None
+
+    def handle_selection(result: DialogResult):
+      if result == DialogResult.CONFIRM and dialog is not None:
+        temperature = int(dialog.selection.removesuffix(" °C"))
+        self._params.put("FanControlAmbientTemperatureC", temperature)
+        self.set_value(self._temperature_label(temperature))
+
+    dialog = MultiOptionDialog(tr("Average City Temperature (Celsius)"), options, current=current, callback=handle_selection)
+    gui_app.push_widget(dialog)
+
+
+class DeviceLayoutMiciSP(DeviceLayoutMici):
+  def __init__(self):
+    super().__init__()
+    self._scroller.add_widget(FanClimateButton())
 
 
 class SettingsLayoutSP(OP.SettingsLayout):
   def __init__(self):
     OP.SettingsLayout.__init__(self)
 
-    device_panel = DeviceLayoutMici()
+    device_panel = DeviceLayoutMiciSP()
     self._scroller._items[2].set_click_callback(lambda: gui_app.push_widget(device_panel))
 
     self.icon_offroad_enable = gui_app.texture("../../sunnypilot/selfdrive/assets/icons_mici/always_offroad.png", BIG_ICON_SIZE,
