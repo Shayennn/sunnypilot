@@ -12,22 +12,11 @@ class TestCanParserPacker(unittest.TestCase):
   COUNTER_DBC = "honda_civic_touring_2016_can_generated"
   COUNTER_MSG = "STEERING_CONTROL"
   COUNTER_ADDR = 0xE4
-  COUNTER_PERIOD_NANOS = 500_000_000
   COUNTER_MAX_ELAPSED_NANOS = 1_250_000_000
 
   @classmethod
   def counter_policy(cls):
     return CounterPolicy(
-      name="test_counter_policy",
-      allowed_deltas=frozenset({1, 2}),
-      expected_period_nanos=cls.COUNTER_PERIOD_NANOS,
-      tolerance_nanos=25_000_000,
-    )
-
-  @classmethod
-  def max_elapsed_counter_policy(cls):
-    return CounterPolicy(
-      name="test_max_elapsed_counter_policy",
       allowed_deltas=frozenset({1, 2}),
       max_elapsed_nanos=cls.COUNTER_MAX_ELAPSED_NANOS,
     )
@@ -37,11 +26,6 @@ class TestCanParserPacker(unittest.TestCase):
     counter_policies = {cls.COUNTER_MSG: cls.counter_policy()} if policy else None
     return CANParser(cls.COUNTER_DBC, messages if messages is not None else [(cls.COUNTER_MSG, 0)], 0,
                      counter_policies=counter_policies)
-
-  @classmethod
-  def max_elapsed_counter_parser(cls, messages=None):
-    return CANParser(cls.COUNTER_DBC, messages if messages is not None else [(cls.COUNTER_MSG, 0)], 0,
-                     counter_policies={cls.COUNTER_MSG: cls.max_elapsed_counter_policy()})
 
   @classmethod
   def counter_msg(cls, counter, steer_torque=0, bad_checksum=False):
@@ -169,7 +153,7 @@ class TestCanParserPacker(unittest.TestCase):
     with self.assertRaises(RuntimeError):
       CANParser("tesla_model3_party", [], 0, counter_policies={"SCCM_leftStalk": policy})
     with self.assertRaises(RuntimeError):
-      wide_policy = CounterPolicy("too_wide", frozenset({1, 4}), self.COUNTER_PERIOD_NANOS)
+      wide_policy = CounterPolicy(frozenset({1, 4}), self.COUNTER_MAX_ELAPSED_NANOS)
       CANParser(self.COUNTER_DBC, [], 0, counter_policies={self.COUNTER_MSG: wide_policy})
     with self.assertRaises(RuntimeError):
       CANParser(self.COUNTER_DBC, [], 0, counter_policies={self.COUNTER_MSG: policy, self.COUNTER_ADDR: policy})
@@ -180,42 +164,17 @@ class TestCanParserPacker(unittest.TestCase):
 
   def test_counter_policy_validation(self):
     invalid_policies = (
-      {"name": ""},
-      {"name": "test", "allowed_deltas": frozenset()},
-      {"name": "test", "allowed_deltas": frozenset({0, 1})},
-      {"name": "test", "allowed_deltas": frozenset({1.0})},
-      {"name": "test", "allowed_deltas": frozenset({1, 2})},
-      {"name": "test", "allowed_deltas": frozenset({1}), "expected_period_nanos": 500_000_000},
-      {"name": "test", "expected_period_nanos": 0},
-      {"name": "test", "tolerance_nanos": -1},
-      {"name": "test", "tolerance_nanos": 1},
-      {"name": "test", "allowed_deltas": frozenset({1}), "max_elapsed_nanos": 1_250_000_000},
-      {"name": "test", "allowed_deltas": frozenset({1, 2}), "expected_period_nanos": 500_000_000,
-       "max_elapsed_nanos": 1_250_000_000},
-      {"name": "test", "allowed_deltas": frozenset({1, 2}), "max_elapsed_nanos": 0},
-      {"name": "test", "allowed_deltas": frozenset({1, 2}), "max_elapsed_nanos": True},
+      {"allowed_deltas": frozenset(), "max_elapsed_nanos": self.COUNTER_MAX_ELAPSED_NANOS},
+      {"allowed_deltas": frozenset({0, 1}), "max_elapsed_nanos": self.COUNTER_MAX_ELAPSED_NANOS},
+      {"allowed_deltas": frozenset({1.0}), "max_elapsed_nanos": self.COUNTER_MAX_ELAPSED_NANOS},
+      {"allowed_deltas": frozenset({2}), "max_elapsed_nanos": self.COUNTER_MAX_ELAPSED_NANOS},
+      {"allowed_deltas": frozenset({1}), "max_elapsed_nanos": self.COUNTER_MAX_ELAPSED_NANOS},
+      {"allowed_deltas": frozenset({1, 2}), "max_elapsed_nanos": 0},
+      {"allowed_deltas": frozenset({1, 2}), "max_elapsed_nanos": True},
     )
     for kwargs in invalid_policies:
       with self.subTest(kwargs=kwargs), self.assertRaises(ValueError):
         CounterPolicy(**kwargs)
-
-  def test_counter_policy_accepts_cadence_and_rollover(self):
-    sequences = (
-      ((0, 1, 3), (1_000_000_000, 1_500_000_000, 2_500_000_000)),
-      ((2, 0, 1), (1_000_000_000, 2_000_000_000, 2_500_000_000)),
-      ((3, 1), (1_000_000_000, 2_000_000_000)),
-    )
-
-    for counters, timestamps in sequences:
-      with self.subTest(counters=counters):
-        parser = self.counter_parser()
-        for counter, nanos in zip(counters, timestamps, strict=True):
-          assert parser.update([nanos, [self.counter_msg(counter)]]) == {self.COUNTER_ADDR}
-          assert parser.can_valid
-
-        state = parser.message_states[self.COUNTER_ADDR]
-        assert state.counter == counters[-1]
-        assert state.counter_fail == 0
 
   def test_counter_policy_preserves_untimed_plus_one(self):
     for elapsed_nanos in (0, 29_510_464, 500_000_000, 1_000_000_000):
@@ -225,38 +184,6 @@ class TestCanParserPacker(unittest.TestCase):
         assert parser.update([1_000_000_000 + elapsed_nanos, [self.counter_msg(1)]]) == {self.COUNTER_ADDR}
         assert parser.message_states[self.COUNTER_ADDR].counter_fail == 0
         assert parser.can_valid
-
-  def test_counter_policy_rejects_wrong_delta_or_timing(self):
-    cases = (
-      (0, 1_500_000_000, "delta"),               # repeated
-      (3, 2_500_000_000, "delta"),               # +3/backwards on a 2-bit counter
-      (2, 1_000_000_000, "non_monotonic_time"),  # +2 with no elapsed time
-      (2, 1_500_000_000, "timing"),              # +2 at 0.5 seconds
-      (2, 2_026_000_000, "timing"),              # just outside tolerance
-    )
-
-    for counter, nanos, reason in cases:
-      with self.subTest(counter=counter, nanos=nanos):
-        parser = self.counter_parser()
-        assert parser.update([1_000_000_000, [self.counter_msg(0, 100)]]) == {self.COUNTER_ADDR}
-        # Preserve legacy grace and rephase semantics for checksum-valid values.
-        assert parser.update([nanos, [self.counter_msg(counter, 200)]]) == {self.COUNTER_ADDR}
-
-        state = parser.message_states[self.COUNTER_ADDR]
-        assert state.counter == counter
-        assert state.counter_fail == 1
-        assert state.counter_policy_last_reject_reason == reason
-        assert list(state.timestamps) == [1_000_000_000, nanos]
-        assert parser.vl[self.COUNTER_MSG]["STEER_TORQUE"] == 200
-        assert parser.can_valid
-
-  def test_counter_policy_timing_tolerance_is_inclusive(self):
-    for elapsed_nanos in (975_000_000, 1_025_000_000):
-      with self.subTest(elapsed_nanos=elapsed_nanos):
-        parser = self.counter_parser()
-        parser.update([1_000_000_000, [self.counter_msg(0)]])
-        assert parser.update([1_000_000_000 + elapsed_nanos, [self.counter_msg(2)]]) == {self.COUNTER_ADDR}
-        assert parser.message_states[self.COUNTER_ADDR].counter_fail == 0
 
   def test_counter_policy_checksum_first_and_recovery(self):
     parser = self.counter_parser()
@@ -277,22 +204,21 @@ class TestCanParserPacker(unittest.TestCase):
     assert state.counter_fail == 0
     assert parser.vl[self.COUNTER_MSG]["STEER_TORQUE"] == 100
 
-    # A valid-checksum timing rejection preserves legacy decoded-value grace
+    # A valid-checksum delta rejection preserves legacy decoded-value grace
     # and becomes the observed baseline for bounded recovery.
-    assert parser.update([1_700_000_000, [self.counter_msg(1, 300)]]) == {self.COUNTER_ADDR}
-    assert state.counter == 1
+    assert parser.update([1_700_000_000, [self.counter_msg(3, 300)]]) == {self.COUNTER_ADDR}
+    assert state.counter == 3
     assert state.counter_fail == 1
     assert list(state.timestamps) == [1_000_000_000, 1_700_000_000]
     assert parser.vl[self.COUNTER_MSG]["STEER_TORQUE"] == 300
 
     # Relative to the last checksum-valid frame, +2 at one second is valid and heals one failure.
-    assert parser.update([2_700_000_000, [self.counter_msg(3, 400)]]) == {self.COUNTER_ADDR}
-    assert state.counter == 3
+    assert parser.update([2_700_000_000, [self.counter_msg(1, 400)]]) == {self.COUNTER_ADDR}
+    assert state.counter == 1
     assert state.counter_fail == 0
-    assert state.counter_policy_accepted_alternate == 1
     assert parser.vl[self.COUNTER_MSG]["STEER_TORQUE"] == 400
 
-  def test_counter_policy_max_elapsed_accepts_both_phases_and_boundary(self):
+  def test_counter_policy_accepts_both_phases_rollover_and_boundary(self):
     cases = (
       (0, 2, 500_000_000),
       (1, 3, self.COUNTER_MAX_ELAPSED_NANOS),
@@ -301,34 +227,40 @@ class TestCanParserPacker(unittest.TestCase):
 
     for start_counter, next_counter, elapsed_nanos in cases:
       with self.subTest(start_counter=start_counter, elapsed_nanos=elapsed_nanos):
-        parser = self.max_elapsed_counter_parser()
+        parser = self.counter_parser()
         assert parser.update([1_000_000_000, [self.counter_msg(start_counter)]]) == {self.COUNTER_ADDR}
         assert parser.update([1_000_000_000 + elapsed_nanos,
                               [self.counter_msg(next_counter)]]) == {self.COUNTER_ADDR}
         state = parser.message_states[self.COUNTER_ADDR]
         assert state.counter_fail == 0
-        assert state.counter_policy_accepted_alternate == 1
 
     # Normal +1 transitions retain legacy behavior outside the alternate-delta time ceiling.
-    parser = self.max_elapsed_counter_parser()
+    parser = self.counter_parser()
     assert parser.update([1_000_000_000, [self.counter_msg(0)]]) == {self.COUNTER_ADDR}
     assert parser.update([2_250_000_001, [self.counter_msg(1)]]) == {self.COUNTER_ADDR}
     assert parser.message_states[self.COUNTER_ADDR].counter_fail == 0
 
-  def test_counter_policy_max_elapsed_rejects_non_monotonic_or_late(self):
+  def test_counter_policy_rejects_wrong_delta_non_monotonic_or_late(self):
     cases = (
-      (0, "non_monotonic_time"),
-      (self.COUNTER_MAX_ELAPSED_NANOS + 1, "timing"),
+      ("repeated", 0, 500_000_000),
+      ("backwards", 3, 500_000_000),
+      ("non-monotonic", 2, 0),
+      ("late", 2, self.COUNTER_MAX_ELAPSED_NANOS + 1),
     )
 
-    for elapsed_nanos, reason in cases:
-      with self.subTest(elapsed_nanos=elapsed_nanos):
-        parser = self.max_elapsed_counter_parser()
-        assert parser.update([1_000_000_000, [self.counter_msg(0)]]) == {self.COUNTER_ADDR}
-        assert parser.update([1_000_000_000 + elapsed_nanos, [self.counter_msg(2)]]) == {self.COUNTER_ADDR}
+    for name, counter, elapsed_nanos in cases:
+      with self.subTest(name=name):
+        parser = self.counter_parser()
+        assert parser.update([1_000_000_000, [self.counter_msg(0, 100)]]) == {self.COUNTER_ADDR}
+        nanos = 1_000_000_000 + elapsed_nanos
+        # Preserve legacy grace and rephase semantics for checksum-valid values.
+        assert parser.update([nanos, [self.counter_msg(counter, 200)]]) == {self.COUNTER_ADDR}
         state = parser.message_states[self.COUNTER_ADDR]
+        assert state.counter == counter
         assert state.counter_fail == 1
-        assert state.counter_policy_last_reject_reason == reason
+        assert list(state.timestamps) == [1_000_000_000, nanos]
+        assert parser.vl[self.COUNTER_MSG]["STEER_TORQUE"] == 200
+        assert parser.can_valid
 
   def test_counter_policy_rejects_wrong_message_size(self):
     policy = self.counter_policy()
@@ -341,7 +273,6 @@ class TestCanParserPacker(unittest.TestCase):
     assert parser.update([1_000_000_000, [short_msg]]) == set()
     assert not state.counter_initialized
     assert state.counter_fail == 1
-    assert state.counter_policy_last_reject_reason == "size"
     assert not state.timestamps
 
     valid_msg = CANPacker("tesla_model3_party").make_can_msg("DAS_settings", 2, {"DAS_settingCounter": 0})

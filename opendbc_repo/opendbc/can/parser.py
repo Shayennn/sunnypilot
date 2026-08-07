@@ -14,38 +14,20 @@ CAN_INVALID_CNT = 5
 
 @dataclass(frozen=True)
 class CounterPolicy:
-  name: str
-  allowed_deltas: frozenset[int] = frozenset({1})
-  expected_period_nanos: int | None = None
-  tolerance_nanos: int = 0
-  max_elapsed_nanos: int | None = None
+  allowed_deltas: frozenset[int]
+  max_elapsed_nanos: int
 
   def __post_init__(self) -> None:
     object.__setattr__(self, "allowed_deltas", frozenset(self.allowed_deltas))
-    if not isinstance(self.name, str) or not self.name:
-      raise ValueError("counter policy name must not be empty")
     if not self.allowed_deltas or any(not isinstance(delta, int) or isinstance(delta, bool) or delta <= 0
                                       for delta in self.allowed_deltas):
       raise ValueError("counter policy deltas must be positive integers")
-    alternate_deltas = self.allowed_deltas - {1}
-    if alternate_deltas and self.expected_period_nanos is None and self.max_elapsed_nanos is None:
-      raise ValueError("alternate counter policy deltas require a timing bound")
-    if not alternate_deltas and (self.expected_period_nanos is not None or self.max_elapsed_nanos is not None):
-      raise ValueError("counter policy timing bound requires an alternate delta")
-    if self.expected_period_nanos is not None and self.max_elapsed_nanos is not None:
-      raise ValueError("counter policy exact period and maximum elapsed time are mutually exclusive")
-    if self.expected_period_nanos is not None and (
-      not isinstance(self.expected_period_nanos, int) or isinstance(self.expected_period_nanos, bool) or self.expected_period_nanos <= 0
-    ):
-      raise ValueError("counter policy period must be positive")
-    if self.max_elapsed_nanos is not None and (
-      not isinstance(self.max_elapsed_nanos, int) or isinstance(self.max_elapsed_nanos, bool) or self.max_elapsed_nanos <= 0
-    ):
+    if 1 not in self.allowed_deltas:
+      raise ValueError("counter policy must preserve the normal delta")
+    if self.allowed_deltas == {1}:
+      raise ValueError("counter policy requires an alternate delta")
+    if not isinstance(self.max_elapsed_nanos, int) or isinstance(self.max_elapsed_nanos, bool) or self.max_elapsed_nanos <= 0:
       raise ValueError("counter policy maximum elapsed time must be positive")
-    if not isinstance(self.tolerance_nanos, int) or isinstance(self.tolerance_nanos, bool) or self.tolerance_nanos < 0:
-      raise ValueError("counter policy tolerance must not be negative")
-    if self.expected_period_nanos is None and self.tolerance_nanos != 0:
-      raise ValueError("counter policy tolerance requires an expected period")
 
 
 def get_raw_value(dat: bytes | bytearray, sig: Signal) -> int:
@@ -84,11 +66,6 @@ class MessageState:
   counter_policy: CounterPolicy | None = None
   counter_initialized: bool = False
   counter_nanos: int = 0
-  counter_policy_accepted_alternate: int = 0
-  counter_policy_rejected: int = 0
-  counter_policy_last_delta: int | None = None
-  counter_policy_last_elapsed_nanos: int | None = None
-  counter_policy_last_reject_reason: str | None = None
   counter_policy_last_accept_log_nanos: int | None = None
   counter_policy_last_reject_log_nanos: int | None = None
   counter_policy_last_invalid_log_nanos: int | None = None
@@ -114,15 +91,12 @@ class MessageState:
     last_log_nanos = getattr(self, attr)
     if last_log_nanos is None or (nanos - last_log_nanos) >= interval_nanos:
       log = carlog.warning if warning else carlog.info
-      log(f"CANParser: counter_policy_event={event} policy={self.counter_policy.name} " +
-          f"address={hex(self.address)} message={self.name} {msg}")
+      log(f"CANParser: counter_policy_event={event} address={hex(self.address)} message={self.name} {msg}")
       setattr(self, attr, nanos)
 
   def reject_counter_policy(self, nanos: int, reason: str, details: str) -> bool:
     assert self.counter_policy is not None
     self.counter_fail = min(self.counter_fail + 1, MAX_BAD_COUNTER)
-    self.counter_policy_rejected += 1
-    self.counter_policy_last_reject_reason = reason
     grace = self.counter_fail < MAX_BAD_COUNTER
     details = f"reason={reason} {details} counter_fail={self.counter_fail} grace={str(grace).lower()}"
     self.counter_policy_log(nanos, "reject", details, warning=True)
@@ -133,8 +107,6 @@ class MessageState:
 
   def parse(self, nanos: int, dat: bytes) -> bool:
     if self.counter_policy is not None and len(dat) != self.size:
-      self.counter_policy_last_delta = None
-      self.counter_policy_last_elapsed_nanos = None
       self.reject_counter_policy(nanos, "size", f"expected_size={self.size} size={len(dat)}")
       return False
 
@@ -209,15 +181,12 @@ class MessageState:
       self.counter = cur_count
       self.counter_nanos = nanos
       self.counter_initialized = True
-      carlog.info(f"CANParser: counter_policy_event=seed policy={self.counter_policy.name} " +
-                  f"address={hex(self.address)} message={self.name} counter={cur_count}")
+      carlog.info(f"CANParser: counter_policy_event=seed address={hex(self.address)} message={self.name} counter={cur_count}")
       return True
 
     counter_mask = (1 << cnt_size) - 1
     delta = (cur_count - self.counter) & counter_mask
     elapsed_nanos = nanos - self.counter_nanos
-    self.counter_policy_last_delta = delta
-    self.counter_policy_last_elapsed_nanos = elapsed_nanos
 
     reject_reason = None
     if delta not in self.counter_policy.allowed_deltas:
@@ -225,14 +194,8 @@ class MessageState:
     elif delta != 1:
       if elapsed_nanos <= 0:
         reject_reason = "non_monotonic_time"
-      elif self.counter_policy.max_elapsed_nanos is not None:
-        if elapsed_nanos > self.counter_policy.max_elapsed_nanos:
-          reject_reason = "timing"
-      else:
-        assert self.counter_policy.expected_period_nanos is not None
-        expected_nanos = delta * self.counter_policy.expected_period_nanos
-        if abs(elapsed_nanos - expected_nanos) > self.counter_policy.tolerance_nanos:
-          reject_reason = "timing"
+      elif elapsed_nanos > self.counter_policy.max_elapsed_nanos:
+        reject_reason = "timing"
 
     if reject_reason is not None:
       details = (f"previous_counter={self.counter} counter={cur_count} delta={delta} " +
@@ -250,13 +213,10 @@ class MessageState:
     self.counter_policy_invalid_logged = False
     self.counter = cur_count
     self.counter_nanos = nanos
-    self.counter_policy_last_reject_reason = None
 
     if delta != 1:
-      self.counter_policy_accepted_alternate += 1
       self.counter_policy_log(nanos, "accept_alternate",
-                              f"counter={cur_count} delta={delta} elapsed_nanos={elapsed_nanos} " +
-                              f"accepted_alternate={self.counter_policy_accepted_alternate}")
+                              f"counter={cur_count} delta={delta} elapsed_nanos={elapsed_nanos}")
     return True
 
   def valid(self, current_nanos: int, bus_timeout: bool) -> bool:
