@@ -1,5 +1,5 @@
 import copy
-from opendbc.can import CANDefine, CANParser
+from opendbc.can import CANDefine, CANParser, CounterPolicy
 from opendbc.car import Bus, structs
 from opendbc.car.carlog import carlog
 from opendbc.car.common.conversions import Conversions as CV
@@ -10,6 +10,13 @@ from opendbc.car.tesla.values import DBC, CANBUS, GEAR_MAP, STEER_THRESHOLD, Tes
 from opendbc.sunnypilot.car.tesla.carstate_ext import CarStateExt
 
 ButtonType = structs.CarState.ButtonEvent.Type
+
+DAS_SETTINGS_COUNTER_POLICY = CounterPolicy(
+  # Preserve normal +1 semantics at any arrival time. A +2 is accepted only
+  # when the checksum-valid transition arrives within the bounded time window.
+  allowed_deltas=frozenset({1, 2}),
+  max_elapsed_nanos=1_250_000_000,
+)
 
 
 class CarState(CarStateBase, CarStateExt):
@@ -149,6 +156,7 @@ class CarState(CarStateBase, CarStateExt):
   def get_can_parsers(CP, CP_SP):
     return {
       Bus.party: CANParser(DBC[CP.carFingerprint][Bus.party], [], CANBUS.party),
-      Bus.ap_party: CANParser(DBC[CP.carFingerprint][Bus.party], [], CANBUS.autopilot_party),
+      Bus.ap_party: CANParser(DBC[CP.carFingerprint][Bus.party], [], CANBUS.autopilot_party,
+                              counter_policies={"DAS_settings": DAS_SETTINGS_COUNTER_POLICY}),
       **CarStateExt.get_parser(CP, CP_SP),
     }
