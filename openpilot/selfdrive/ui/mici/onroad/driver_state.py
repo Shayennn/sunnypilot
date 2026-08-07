@@ -5,7 +5,6 @@ from openpilot.cereal import log
 from openpilot.common.filter_simple import FirstOrderFilter
 from openpilot.system.ui.lib.application import gui_app
 from openpilot.system.ui.widgets import Widget
-from openpilot.selfdrive.ui.ui_state import ui_state
 
 
 AlertSize = log.SelfdriveState.AlertSize
@@ -18,6 +17,10 @@ LOOKING_CENTER_THRESHOLD_LOWER = math.radians(3)
 
 CONE_COLOR_GREEN = (0, 255, 64)
 CONE_COLOR_ORANGE = (255, 115, 0)
+
+def get_ui_state():
+  from openpilot.selfdrive.ui.ui_state import ui_state
+  return ui_state
 
 
 class DriverStateRenderer(Widget):
@@ -76,6 +79,7 @@ class DriverStateRenderer(Widget):
 
   @property
   def should_draw(self):
+    ui_state = get_ui_state()
     return (self._should_draw and ui_state.sm["selfdriveState"].alertSize == AlertSize.none and
             ui_state.sm.recv_frame["driverStateV2"] > ui_state.started_frame)
 
@@ -162,7 +166,7 @@ class DriverStateRenderer(Widget):
       rl.draw_line_ex((start_x, start_y), (end_x, end_y), 12, color)
 
   def get_driver_data(self):
-    sm = ui_state.sm
+    sm = get_ui_state().sm
 
     dm_state = sm["driverMonitoringState"]
     self._is_active = dm_state.activePolicy == log.DriverMonitoringState.MonitoringPolicy.vision
