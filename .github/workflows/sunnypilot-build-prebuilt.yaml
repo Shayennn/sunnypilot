@@ -151,6 +151,7 @@ jobs:
           source /etc/profile;
           export UV_PROJECT_ENVIRONMENT=${HOME}/venv
           export VIRTUAL_ENV=$UV_PROJECT_ENVIRONMENT
+          uv sync --frozen --extra testing
           printenv >> $GITHUB_ENV
           if [[ "${{ runner.debug }}" == "1" ]]; then
             cat $GITHUB_OUTPUT
@@ -193,6 +194,8 @@ jobs:
 
       - name: Test Mici feature changes
         run: |
+          export PARAMS_ROOT="${RUNNER_TEMP}/test_params"
+          mkdir -p "$PARAMS_ROOT"
           cd "$BUILD_DIR"
           "$VIRTUAL_ENV/bin/python" -m pytest -n0 \
             opendbc_repo/opendbc/can/tests/test_packer_parser.py \
