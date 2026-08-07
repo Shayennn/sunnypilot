@@ -180,7 +180,6 @@ class TestTeslaFingerprint(unittest.TestCase):
             assert parser.update([2_250_000_000, [second]]) == {0x293}
             state = parser.message_states[0x293]
             assert state.counter_fail == 0
-            assert state.counter_policy_accepted_alternate == 1
 
   def test_das_settings_incident_sequence(self):
     # Exact contiguous five-+2 run and normalized timestamps from incident rlog 3.
@@ -213,7 +212,6 @@ class TestTeslaFingerprint(unittest.TestCase):
     state = parser.message_states[0x293]
     assert state.counter == 0
     assert state.counter_fail == 0
-    assert state.counter_policy_accepted_alternate == len(payloads) - 1
 
     corrupt = bytearray(bytes.fromhex("000c559005042fbe"))
     corrupt[-1] ^= 0x1

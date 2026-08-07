@@ -12,7 +12,6 @@ from opendbc.sunnypilot.car.tesla.carstate_ext import CarStateExt
 ButtonType = structs.CarState.ButtonEvent.Type
 
 DAS_SETTINGS_COUNTER_POLICY = CounterPolicy(
-  name="tesla_das_settings_counter",
   # Preserve normal +1 semantics at any arrival time. A +2 is accepted only
   # when the checksum-valid transition arrives within the bounded time window.
   allowed_deltas=frozenset({1, 2}),
