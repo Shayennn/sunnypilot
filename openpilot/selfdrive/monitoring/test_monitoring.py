@@ -1,5 +1,6 @@
-from openpilot.common.parameterized import parameterized
+from math import radians
 
+from openpilot.common.parameterized import parameterized
 from openpilot.common.test import OpenpilotTestCase
 from openpilot.cereal import log
 from opendbc.car.structs import car
@@ -38,6 +39,29 @@ msg_DISTRACTED = make_msg(True, distracted=True)
 msg_ATTENTIVE_UNCERTAIN = make_msg(True, model_uncertain=True)
 msg_DISTRACTED_UNCERTAIN = make_msg(True, distracted=True, model_uncertain=True)
 msg_DISTRACTED_BUT_SOMEHOW_UNCERTAIN = make_msg(True, distracted=True, model_uncertain=dm_settings._HI_STD_THRESHOLD*1.5)
+
+
+LEFT_MODEL_YAW = 0.2
+RIGHT_MODEL_YAW = 0.6
+LEFT_PHONE_PROB = 0.11
+RIGHT_PHONE_PROB = 0.22
+TEST_STEERING_ANGLE_DEG = 40.
+LHD_STEER_YAW_OFFSET = -radians(TEST_STEERING_ANGLE_DEG - dm_settings._POSE_YAW_MIN_STEER_DEG) * dm_settings._POSE_YAW_STEER_FACTOR
+RHD_STEER_YAW_OFFSET = -LHD_STEER_YAW_OFFSET
+
+def make_driver_side_msg():
+  ds = log.DriverStateV2.new_message()
+  for driver_data, yaw, phone_prob in ((ds.leftDriverData, LEFT_MODEL_YAW, LEFT_PHONE_PROB),
+                                       (ds.rightDriverData, RIGHT_MODEL_YAW, RIGHT_PHONE_PROB)):
+    driver_data.faceOrientation = [0., yaw, 0.]
+    driver_data.facePosition = [0., 0.]
+    driver_data.faceOrientationStd = [0., 0., 0.]
+    driver_data.facePositionStd = [0., 0.]
+    driver_data.faceProb = 1.
+    driver_data.leftEyeProb = 1.
+    driver_data.rightEyeProb = 1.
+    driver_data.phoneProb = phone_prob
+  return ds
 
 # driver interaction with car
 car_interaction_DETECTED = True
@@ -230,6 +254,19 @@ class TestMonitoring(OpenpilotTestCase):
     assert alert_lvls[int((INVISIBLE_SECONDS_TO_ORANGE-1+DT_DMON*s._HI_STD_FALLBACK_TIME+0.1)/DT_DMON)] == 2
     assert alert_lvls[int((INVISIBLE_SECONDS_TO_RED-1+DT_DMON*s._HI_STD_FALLBACK_TIME+0.1)/DT_DMON)] == 3
 
+  @parameterized.expand([
+    (False, -LEFT_MODEL_YAW, LEFT_PHONE_PROB),
+    (True, RIGHT_MODEL_YAW, RIGHT_PHONE_PROB),
+  ], names=["wheel_on_right", "expected_yaw", "expected_phone_prob"])
+  def test_driver_data_uses_detected_wheel_side(self, wheel_on_right, expected_yaw, expected_phone_prob):
+    dm = DriverMonitoring(rhd_saved=wheel_on_right)
+
+    dm._update_states(make_driver_side_msg(), [0., 0., 0.], 0., False, False, steering_angle_deg=TEST_STEERING_ANGLE_DEG)
+
+    assert dm.wheel_on_right == wheel_on_right
+    self.assertAlmostEqual(dm.phone_prob, expected_phone_prob)
+    self.assertAlmostEqual(dm.pose.yaw, expected_yaw)
+    self.assertAlmostEqual(dm.pose.steer_yaw_offset, RHD_STEER_YAW_OFFSET if wheel_on_right else LHD_STEER_YAW_OFFSET)
 
 def _build_sm(selfdrive_enabled, lat_active, steering_pressed, gas_pressed):
   cs = car.CarState.new_message()
