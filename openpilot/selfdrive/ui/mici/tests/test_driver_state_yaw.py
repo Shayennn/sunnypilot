@@ -30,10 +30,11 @@ def test_physical_turn_renders_correct_ring_and_uses_wheel_side_head(
   left_head = SimpleNamespace(name="left")
   right_head = SimpleNamespace(name="right")
   driver_state = SimpleNamespace(leftDriverData=left_head, rightDriverData=right_head)
-  monkeypatch.setattr(driver_state_module.ui_state, "sm", {
+  fake_ui_state = SimpleNamespace(sm={
     "driverMonitoringState": dm_state,
     "driverStateV2": driver_state,
   })
+  monkeypatch.setattr(driver_state_module, "get_ui_state", lambda: fake_ui_state)
   renderer = object.__new__(driver_state_module.DriverStateRenderer)
   renderer._force_active = False
 
