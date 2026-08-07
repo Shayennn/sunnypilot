@@ -31,6 +31,18 @@ jobs:
         run: |
           echo "version=$(date -u '+%Y.%m.%d')-${GITHUB_RUN_NUMBER}" >> "${GITHUB_OUTPUT}"
 
+      - name: Install UI test runtime
+        shell: bash
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            libgl1 \
+            libx11-6 \
+            libxcursor1 \
+            libxi6 \
+            libxinerama1 \
+            libxrandr2
+
       - name: Set up locked environment
         shell: bash
         run: |
