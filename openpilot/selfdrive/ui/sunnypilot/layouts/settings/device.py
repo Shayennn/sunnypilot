@@ -8,6 +8,7 @@ from openpilot.selfdrive.ui.layouts.settings.device import DeviceLayout
 from openpilot.selfdrive.ui.onroad.cabin_camera_dialog import CabinCameraDialog
 from openpilot.selfdrive.ui.ui_state import ui_state
 from openpilot.common.hardware import HARDWARE
+from openpilot.system.hardware.fan_controller import MAX_AVERAGE_TEMP_C, MIN_AVERAGE_TEMP_C, SAN_DIEGO_AVERAGE_TEMP_C
 from openpilot.system.ui.lib.application import gui_app
 from openpilot.system.ui.lib.multilang import tr
 from openpilot.system.ui.sunnypilot.widgets.list_view import option_item_sp, multiple_button_item_sp, button_item_sp, \
@@ -68,6 +69,21 @@ class DeviceLayoutSP(DeviceLayout):
       label_callback=self._update_max_time_offroad_label
     )
 
+    self._fan_control_ambient_temp = option_item_sp(
+      title=lambda: tr("Average City Temperature"),
+      description=lambda: tr("Compensates fan control for your city's yearly average outdoor temperature. " +
+                             "Hotter climates run the fan earlier and allow more cooling while the device is idle. " +
+                             "The San Diego default is 18 °C."),
+      param="FanControlAmbientTemperatureC",
+      min_value=int(MIN_AVERAGE_TEMP_C),
+      max_value=int(MAX_AVERAGE_TEMP_C),
+      value_change_step=1,
+      enabled=lambda: ui_state.is_offroad(),
+      label_width=360,
+      inline=True,
+      label_callback=lambda value: f"{value} °C" + (tr(" (Default)") if value == SAN_DIEGO_AVERAGE_TEMP_C else ""),
+    )
+
     self._device_wake_mode = multiple_button_item_sp(
       title=lambda: tr("Wake Up Behavior"),
       description=self.wake_mode_description,
@@ -122,6 +138,8 @@ class DeviceLayoutSP(DeviceLayout):
       self._device_wake_mode,
       LineSeparator(),
       self._max_time_offroad,
+      LineSeparator(),
+      self._fan_control_ambient_temp,
       LineSeparator(height=10),
       self._quiet_mode_and_dcam,
       self._reg_and_training,
