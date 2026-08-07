@@ -1,9 +1,9 @@
+from importlib import import_module
 from types import SimpleNamespace
 
 import pytest
 
 from openpilot.cereal import log
-from openpilot.selfdrive.ui.mici.onroad import driver_state as driver_state_module
 
 
 @pytest.mark.parametrize(("is_rhd", "policy_yaw", "expected_visual_yaw", "expected_head"), [
@@ -18,6 +18,8 @@ def test_physical_turn_renders_correct_ring_and_uses_wheel_side_head(
   monkeypatch, is_rhd, policy_yaw, expected_visual_yaw, expected_head,
 ):
   """Policy-normalized yaw still renders the physical turn direction."""
+  monkeypatch.setenv("SCALE", "1")
+  driver_state_module = import_module("openpilot.selfdrive.ui.mici.onroad.driver_state")
   dm_state = SimpleNamespace(
     activePolicy=log.DriverMonitoringState.MonitoringPolicy.vision,
     isRHD=is_rhd,
