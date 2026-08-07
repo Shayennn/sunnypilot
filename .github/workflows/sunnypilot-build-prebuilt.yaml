@@ -1,0 +1,112 @@
+name: sunnypilot prebuilt action
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: staging-source-prebuilt
+  cancel-in-progress: false
+
+env:
+  TARGET_BRANCH: staging
+
+jobs:
+  build:
+    name: Validate Mici prebuilt
+    runs-on: [self-hosted, mici]
+    outputs:
+      version: ${{ steps.metadata.outputs.version }}
+    steps:
+      - name: Check out staging source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+
+      - name: Set build metadata
+        id: metadata
+        shell: bash
+        run: |
+          echo "version=$(date -u '+%Y.%m.%d')-${GITHUB_RUN_NUMBER}" >> "${GITHUB_OUTPUT}"
+
+      - name: Set up locked environment
+        shell: bash
+        run: |
+          source /etc/profile
+          export UV_PROJECT_ENVIRONMENT="${HOME}/venv"
+          export UV_PYTHON_PREFERENCE=managed
+          export UV_PYTHON_INSTALL_DIR="${HOME}/uv/python"
+          export VIRTUAL_ENV="${UV_PROJECT_ENVIRONMENT}"
+          uv sync --frozen --extra testing
+          {
+            echo "UV_PROJECT_ENVIRONMENT=${UV_PROJECT_ENVIRONMENT}"
+            echo "UV_PYTHON_PREFERENCE=${UV_PYTHON_PREFERENCE}"
+            echo "UV_PYTHON_INSTALL_DIR=${UV_PYTHON_INSTALL_DIR}"
+            echo "VIRTUAL_ENV=${VIRTUAL_ENV}"
+          } >> "${GITHUB_ENV}"
+
+      - name: Validate release snapshot
+        shell: bash
+        run: |
+          test -f prebuilt
+          file openpilot/common/params_pyx.so | grep -q 'ARM aarch64'
+          strings openpilot/common/params_pyx.so | grep -qx 'FanControlAmbientTemperatureC'
+          jq empty openpilot/sunnypilot/sunnylink/settings_ui.json
+
+      - name: Run Mici feature tests
+        shell: bash
+        run: |
+          export PARAMS_ROOT="${RUNNER_TEMP}/test_params"
+          mkdir -p "${PARAMS_ROOT}"
+          "${VIRTUAL_ENV}/bin/python" -m pytest -n0 \
+            opendbc_repo/opendbc/can/tests/test_packer_parser.py \
+            opendbc_repo/opendbc/car/tesla/tests/test_tesla.py \
+            openpilot/system/hardware/tests/test_fan_controller.py \
+            openpilot/selfdrive/ui/mici/tests/test_driver_state_yaw.py \
+            openpilot/selfdrive/monitoring/test_monitoring.py
+
+      - name: Run feature lint
+        shell: bash
+        run: |
+          "${VIRTUAL_ENV}/bin/ruff" check \
+            opendbc_repo/opendbc/can/parser.py \
+            opendbc_repo/opendbc/can/tests/test_packer_parser.py \
+            opendbc_repo/opendbc/car/tesla/carstate.py \
+            opendbc_repo/opendbc/car/tesla/tests/test_tesla.py \
+            openpilot/selfdrive/monitoring/test_monitoring.py \
+            openpilot/selfdrive/ui/mici/onroad/driver_state.py \
+            openpilot/selfdrive/ui/mici/tests/test_driver_state_yaw.py \
+            openpilot/selfdrive/ui/sunnypilot/layouts/settings/device.py \
+            openpilot/selfdrive/ui/sunnypilot/mici/layouts/settings.py \
+            openpilot/system/hardware/fan_controller.py \
+            openpilot/system/hardware/hardwared.py \
+            openpilot/system/hardware/tests/test_fan_controller.py
+          git diff --exit-code
+
+  publish:
+    name: Publish staging
+    needs: build
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out validated source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.sha }}
+
+      - name: Publish generated staging branch
+        env:
+          VERSION: ${{ needs.build.outputs.version }}
+        shell: bash
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git rm -r --ignore-unmatch .github
+          printf '#define SUNNYPILOT_VERSION "%s"\n' "${VERSION}" > openpilot/sunnypilot/common/version.h
+          git add openpilot/sunnypilot/common/version.h
+          git commit -m "sunnypilot v${VERSION} release" \
+            -m "source branch: ${GITHUB_REF_NAME}" \
+            -m "source commit: ${GITHUB_SHA}"
+          git push --force origin HEAD:${TARGET_BRANCH}
