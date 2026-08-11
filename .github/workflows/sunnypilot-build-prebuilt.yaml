@@ -15,8 +15,8 @@ env:
 
 jobs:
   build:
-    name: Validate Mici prebuilt
-    runs-on: [self-hosted, mici]
+    name: Validate Tici prebuilt
+    runs-on: [self-hosted, tici]
     outputs:
       version: ${{ steps.metadata.outputs.version }}
     steps:
@@ -51,7 +51,7 @@ jobs:
           export UV_PYTHON_PREFERENCE=managed
           export UV_PYTHON_INSTALL_DIR="${HOME}/uv/python"
           export VIRTUAL_ENV="${UV_PROJECT_ENVIRONMENT}"
-          uv sync --frozen --extra testing
+          uv sync --frozen --extra testing --inexact
           {
             echo "UV_PROJECT_ENVIRONMENT=${UV_PROJECT_ENVIRONMENT}"
             echo "UV_PYTHON_PREFERENCE=${UV_PYTHON_PREFERENCE}"
@@ -67,7 +67,7 @@ jobs:
           strings openpilot/common/params_pyx.so | grep -qx 'FanControlAmbientTemperatureC'
           jq empty openpilot/sunnypilot/sunnylink/settings_ui.json
 
-      - name: Run Mici feature tests
+      - name: Run staging feature tests
         shell: bash
         run: |
           export PARAMS_ROOT="${RUNNER_TEMP}/test_params"
