@@ -66,6 +66,9 @@ jobs:
           file openpilot/common/params_pyx.so | grep -q 'ARM aarch64'
           strings openpilot/common/params_pyx.so | grep -qx 'FanControlAmbientTemperatureC'
           jq empty openpilot/sunnypilot/sunnylink/settings_ui.json
+          source ./launch_env.sh
+          test "${PARAMS_ROOT}" = "/data/params"
+          test "$("${VIRTUAL_ENV}/bin/python" -c 'from openpilot.common.params import Params; print(Params().get_param_path())')" = "/data/params/d"
 
       - name: Run staging feature tests
         shell: bash
