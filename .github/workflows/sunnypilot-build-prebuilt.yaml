@@ -53,7 +53,7 @@ jobs:
           export UV_PYTHON_PREFERENCE=managed
           export UV_PYTHON_INSTALL_DIR="${HOME}/uv/python"
           export VIRTUAL_ENV="${UV_PROJECT_ENVIRONMENT}"
-          uv sync --frozen --extra testing --inexact
+          uv sync --frozen --extra testing --extra tools --inexact
           {
             echo "UV_PROJECT_ENVIRONMENT=${UV_PROJECT_ENVIRONMENT}"
             echo "UV_PYTHON_PREFERENCE=${UV_PYTHON_PREFERENCE}"
@@ -76,7 +76,11 @@ jobs:
           (
             cd upstream-source
             export PYTHONPATH="${PWD}:${PWD}/msgq_repo:${PWD}/opendbc_repo:${PWD}/rednose_repo:${PWD}/teleoprtc_repo:${PWD}/tinygrad_repo"
-            "${VIRTUAL_ENV}/bin/scons" --minimal -j2 openpilot/common/libparams_c.so
+            export PATH="${VIRTUAL_ENV}/bin:${PATH}"
+            mkdir -p "${RUNNER_TEMP}/params-scons-cache"
+            "${VIRTUAL_ENV}/bin/scons" --minimal -j2 \
+              cache_dir="${RUNNER_TEMP}/params-scons-cache" \
+              openpilot/common/libparams_c.so
           )
           cp upstream-source/openpilot/common/libparams_c.so openpilot/common/libparams_c.so
 
