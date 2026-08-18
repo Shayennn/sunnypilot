@@ -4,11 +4,18 @@ import unittest
 from opendbc.can import CANPacker, CANParser
 from opendbc.car import Bus, gen_empty_fingerprint, structs
 from opendbc.car.structs import CarParams
-from opendbc.car.tesla.carstate import CarState, DAS_SETTINGS_COUNTER_POLICY
-from opendbc.car.tesla.interface import CarInterface
+from opendbc.car.tesla.carstate import DAS_SETTINGS_COUNTER_POLICY, CarState
 from opendbc.car.tesla.fingerprints import FW_VERSIONS
+from opendbc.car.tesla.interface import CarInterface
 from opendbc.car.tesla.radar_interface import RADAR_START_ADDR
-from opendbc.car.tesla.values import CANBUS, CAR, DBC, FSD_14_FW, TeslaFlags, TeslaSafetyFlags
+from opendbc.car.tesla.values import (
+  CANBUS,
+  CAR,
+  DBC,
+  FSD_14_FW,
+  TeslaFlags,
+  TeslaSafetyFlags,
+)
 
 Ecu = CarParams.Ecu
 

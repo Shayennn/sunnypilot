@@ -1,12 +1,11 @@
 import math
 import numbers
-from collections.abc import Mapping
 from collections import defaultdict, deque
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 
-from opendbc.car.carlog import carlog
 from opendbc.can.dbc import DBC, Signal
-
+from opendbc.car.carlog import carlog
 
 MAX_BAD_COUNTER = 5
 CAN_INVALID_CNT = 5

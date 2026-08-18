@@ -1,5 +1,5 @@
-import unittest
 import random
+import unittest
 
 from opendbc.can import CANPacker, CANParser, CounterPolicy
 from opendbc.can.parser import CAN_INVALID_CNT

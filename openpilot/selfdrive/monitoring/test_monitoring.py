@@ -1,11 +1,14 @@
 from math import radians
 
-from openpilot.common.parameterized import parameterized
-from openpilot.common.test import OpenpilotTestCase
-from openpilot.cereal import log
 from opendbc.car.structs import car
+from openpilot.cereal import log
+from openpilot.common.parameterized import parameterized
 from openpilot.common.realtime import DT_DMON
-from openpilot.selfdrive.monitoring.policy import DriverMonitoring, DRIVER_MONITOR_SETTINGS
+from openpilot.common.test import OpenpilotTestCase
+from openpilot.selfdrive.monitoring.policy import (
+  DRIVER_MONITOR_SETTINGS,
+  DriverMonitoring,
+)
 
 EventName = log.OnroadEvent.EventName
 dm_settings = DRIVER_MONITOR_SETTINGS()

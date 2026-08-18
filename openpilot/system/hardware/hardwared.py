@@ -12,22 +12,34 @@ from collections import OrderedDict, namedtuple
 import openpilot.cereal.messaging as messaging
 from openpilot.cereal import log
 from openpilot.cereal.services import SERVICE_LIST
-from openpilot.common.utils import strip_deprecated_keys
+from openpilot.common.basedir import BASEDIR
 from openpilot.common.filter_simple import FirstOrderFilter
+from openpilot.common.hardware import COMMA_HARDWARE, HARDWARE
+from openpilot.common.hardware.usb import (
+  CHESTNUT_FW_VERSION,
+  CHESTNUT_ROM_USB_IDS,
+  CHESTNUT_USB_IDS,
+  get_usb_state,
+  get_usb_topology,
+  set_usb_state,
+)
+from openpilot.common.linux import LinuxSystemStats
 from openpilot.common.params import Params
 from openpilot.common.realtime import DT_HW
-from openpilot.selfdrive.selfdrived.alertmanager import set_offroad_alert
-from openpilot.common.hardware import HARDWARE, COMMA_HARDWARE
-from openpilot.common.basedir import BASEDIR
-from openpilot.common.hardware.usb import CHESTNUT_FW_VERSION, CHESTNUT_ROM_USB_IDS, CHESTNUT_USB_IDS, get_usb_state, get_usb_topology, set_usb_state
-from openpilot.common.linux import LinuxSystemStats
-from openpilot.system.loggerd.config import get_available_percent
 from openpilot.common.swaglog import cloudlog
+from openpilot.common.utils import strip_deprecated_keys
+from openpilot.common.version import (
+  get_build_metadata,
+  terms_version,
+  terms_version_sp,
+  training_version,
+)
+from openpilot.selfdrive.selfdrived.alertmanager import set_offroad_alert
 from openpilot.sunnypilot.system.statsd import statlog
 from openpilot.system.hardware.power_monitoring import PowerMonitoring
-from openpilot.system.hardware.fan_controller import FanController
-from openpilot.common.version import terms_version, training_version, get_build_metadata, terms_version_sp
+from openpilot.system.loggerd.config import get_available_percent
 
+from openpilot.system.hardware.fan_controller import FanController
 
 ThermalStatus = log.DeviceState.ThermalStatus
 NetworkType = log.DeviceState.NetworkType

@@ -1,9 +1,14 @@
 
 from openpilot.common.parameterized import parameterized
 from openpilot.common.test import OpenpilotTestCase
+
 from openpilot.system.hardware.fan_controller import (
-  BASE_IDLE_FAN_LIMIT, MAX_IDLE_FAN_LIMIT, SAN_DIEGO_AVERAGE_TEMP_C, FanController,
-  get_climate_adjustment, get_idle_fan_limit,
+  BASE_IDLE_FAN_LIMIT,
+  MAX_IDLE_FAN_LIMIT,
+  SAN_DIEGO_AVERAGE_TEMP_C,
+  FanController,
+  get_climate_adjustment,
+  get_idle_fan_limit,
 )
 
 ALL_CONTROLLERS = [FanController]

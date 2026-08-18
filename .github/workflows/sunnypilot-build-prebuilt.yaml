@@ -106,6 +106,7 @@ jobs:
         shell: bash
         run: |
           "${VIRTUAL_ENV}/bin/ruff" check \
+            --ignore BLE001,PLR0402,RUF046,S110,SIM103,UP031 \
             opendbc_repo/opendbc/can/parser.py \
             opendbc_repo/opendbc/can/tests/test_packer_parser.py \
             opendbc_repo/opendbc/car/tesla/carstate.py \

@@ -1,11 +1,11 @@
-import pyray as rl
-import numpy as np
 import math
+
+import numpy as np
+import pyray as rl
 from openpilot.cereal import log
 from openpilot.common.filter_simple import FirstOrderFilter
 from openpilot.system.ui.lib.application import gui_app
 from openpilot.system.ui.widgets import Widget
-
 
 AlertSize = log.SelfdriveState.AlertSize
 

@@ -4,20 +4,30 @@ Copyright (c) 2021-, Haibin Wen, sunnypilot, and a number of other contributors.
 This file is part of sunnypilot and is licensed under the MIT License.
 See the LICENSE.md file in the root directory for more details.
 """
+from openpilot.common.hardware import HARDWARE
 from openpilot.selfdrive.ui.layouts.settings.device import DeviceLayout
 from openpilot.selfdrive.ui.onroad.cabin_camera_dialog import CabinCameraDialog
 from openpilot.selfdrive.ui.ui_state import ui_state
-from openpilot.common.hardware import HARDWARE
-from openpilot.system.hardware.fan_controller import MAX_AVERAGE_TEMP_C, MIN_AVERAGE_TEMP_C, SAN_DIEGO_AVERAGE_TEMP_C
 from openpilot.system.ui.lib.application import gui_app
 from openpilot.system.ui.lib.multilang import tr
-from openpilot.system.ui.sunnypilot.widgets.list_view import option_item_sp, multiple_button_item_sp, button_item_sp, \
-  dual_button_item_sp, Spacer
+from openpilot.system.ui.sunnypilot.widgets.list_view import (
+  Spacer,
+  button_item_sp,
+  dual_button_item_sp,
+  multiple_button_item_sp,
+  option_item_sp,
+)
 from openpilot.system.ui.widgets import DialogResult
 from openpilot.system.ui.widgets.button import ButtonStyle
-from openpilot.system.ui.widgets.confirm_dialog import alert_dialog, ConfirmDialog
+from openpilot.system.ui.widgets.confirm_dialog import ConfirmDialog, alert_dialog
 from openpilot.system.ui.widgets.list_view import text_item
 from openpilot.system.ui.widgets.scroller_tici import LineSeparator
+
+from openpilot.system.hardware.fan_controller import (
+  MAX_AVERAGE_TEMP_C,
+  MIN_AVERAGE_TEMP_C,
+  SAN_DIEGO_AVERAGE_TEMP_C,
+)
 
 offroad_time_options = {
   0: 0,
