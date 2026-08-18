@@ -12,10 +12,11 @@ concurrency:
 
 env:
   TARGET_BRANCH: staging
+  UPSTREAM_SOURCE_COMMIT: 94a32493e3fd9552a42747ea4337fb151a555bdb
 
 jobs:
   build:
-    name: Validate Tici prebuilt
+    name: Build and validate Tici prebuilt
     runs-on: [self-hosted, tici]
     outputs:
       version: ${{ steps.metadata.outputs.version }}
@@ -59,12 +60,31 @@ jobs:
             echo "VIRTUAL_ENV=${VIRTUAL_ENV}"
           } >> "${GITHUB_ENV}"
 
+      - name: Check out matching upstream source
+        uses: actions/checkout@v4
+        with:
+          repository: sunnypilot/sunnypilot
+          ref: ${{ env.UPSTREAM_SOURCE_COMMIT }}
+          path: upstream-source
+          submodules: recursive
+
+      - name: Rebuild params runtime
+        shell: bash
+        run: |
+          cp openpilot/common/params_keys.h upstream-source/openpilot/common/params_keys.h
+          (
+            cd upstream-source
+            export PYTHONPATH="${PWD}:${PWD}/msgq_repo:${PWD}/opendbc_repo:${PWD}/rednose_repo:${PWD}/teleoprtc_repo:${PWD}/tinygrad_repo"
+            "${VIRTUAL_ENV}/bin/scons" --minimal -j2 openpilot/common/libparams_c.so
+          )
+          cp upstream-source/openpilot/common/libparams_c.so openpilot/common/libparams_c.so
+
       - name: Validate release snapshot
         shell: bash
         run: |
           test -f prebuilt
-          file openpilot/common/params_pyx.so | grep -q 'ARM aarch64'
-          strings openpilot/common/params_pyx.so | grep -qx 'FanControlAmbientTemperatureC'
+          file openpilot/common/libparams_c.so | grep -q 'ARM aarch64'
+          strings openpilot/common/libparams_c.so | grep -qx 'FanControlAmbientTemperatureC'
           jq empty openpilot/sunnypilot/sunnylink/settings_ui.json
           source ./launch_env.sh
           test "${PARAMS_ROOT}" = "/data/params"
@@ -98,7 +118,14 @@ jobs:
             openpilot/system/hardware/fan_controller.py \
             openpilot/system/hardware/hardwared.py \
             openpilot/system/hardware/tests/test_fan_controller.py
-          git diff --exit-code
+          git diff --exit-code -- . ':(exclude)openpilot/common/libparams_c.so'
+
+      - name: Upload params runtime
+        uses: actions/upload-artifact@v4
+        with:
+          name: params-runtime
+          path: openpilot/common/libparams_c.so
+          if-no-files-found: error
 
   publish:
     name: Publish staging
@@ -111,6 +138,12 @@ jobs:
           fetch-depth: 0
           ref: ${{ github.sha }}
 
+      - name: Download params runtime
+        uses: actions/download-artifact@v4
+        with:
+          name: params-runtime
+          path: openpilot/common
+
       - name: Publish generated staging branch
         env:
           VERSION: ${{ needs.build.outputs.version }}
@@ -118,9 +151,12 @@ jobs:
         run: |
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          chmod 755 openpilot/common/libparams_c.so
+          file openpilot/common/libparams_c.so | grep -q 'ARM aarch64'
+          strings openpilot/common/libparams_c.so | grep -qx 'FanControlAmbientTemperatureC'
           git rm -r --ignore-unmatch .github
           printf '#define SUNNYPILOT_VERSION "%s"\n' "${VERSION}" > openpilot/sunnypilot/common/version.h
-          git add openpilot/sunnypilot/common/version.h
+          git add openpilot/common/libparams_c.so openpilot/sunnypilot/common/version.h
           git commit -m "sunnypilot v${VERSION} release" \
             -m "source branch: ${GITHUB_REF_NAME}" \
             -m "source commit: ${GITHUB_SHA}"
