@@ -35,8 +35,9 @@ jobs:
       - name: Install UI test runtime
         shell: bash
         run: |
-          apt-get update
-          apt-get install -y --no-install-recommends \
+          sudo mkdir -p /var/lib/apt/lists/partial
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
             libgl1 \
             libx11-6 \
             libxcursor1 \
